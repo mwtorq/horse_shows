@@ -72,12 +72,15 @@ def reseed_identity_if_empty(conn, schema_name, table_name, identity_column='ID'
         
         if row_count == 0:
             # Reseed identity to 0
-            cursor.execute(f"DBCC CHECKIDENT ('{schema_name}.{table_name}', RESEED, 0)")
+            # Note: DBCC CHECKIDENT needs to be executed without parameterization
+            full_table_name = f"{schema_name}.{table_name}"
+            cursor.execute(f"DBCC CHECKIDENT ('{full_table_name}', RESEED, 0) WITH NO_INFOMSGS")
             conn.commit()
-            print(f"  [OK] Reseeded identity column for {schema_name}.{table_name} to 0 (table is empty)")
+            print(f"  [OK] Reseeded identity column for {full_table_name} to 0 (table is empty)")
         cursor.close()
     except Exception as e:
         # Ignore errors - table might not exist yet or might not have identity column
+        # DBCC CHECKIDENT might not work through pyodbc in all cases
         pass
 
 def create_competitors_table_if_not_exists(conn):
