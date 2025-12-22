@@ -2034,5 +2034,19 @@ def main(skip_processed=True):
             driver.quit()
 
 if __name__ == '__main__':
-    main()
+    import sys
+    
+    # Check for command-line argument to process all shows (including those with existing data)
+    skip_processed = True
+    if len(sys.argv) > 1:
+        if sys.argv[1].lower() in ['--process-all', '-a', '--all']:
+            skip_processed = False
+            print("[INFO] Command-line argument detected: Will process all shows (including those with existing data)")
+        elif sys.argv[1].lower() in ['--help', '-h']:
+            print("Usage: python scrape_class_results.py [--process-all]")
+            print("  --process-all, -a, --all: Process all shows, including those with existing ShowClass or ShowResults data")
+            print("  Default: Skip shows with existing data")
+            sys.exit(0)
+    
+    main(skip_processed=skip_processed)
 
