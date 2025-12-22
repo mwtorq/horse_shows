@@ -1,0 +1,13 @@
+SELECT [ID]
+      ,[ShowListID]
+      ,[Class]
+      ,[ClassName]
+      ,[ClassType]
+      ,[DivisionName]
+      ,[Entries]
+      ,[Placings]
+      ,[CreatedDate]
+      ,[UpdatedDate]
+  FROM [HorseShows].[sResults].[ShowClass]
+
+  --delete [HorseShows].[sResults].[ShowClass]
