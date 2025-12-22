@@ -62,6 +62,24 @@ def get_db_connection():
                 raise
             continue
 
+def reseed_identity_if_empty(conn, schema_name, table_name, identity_column='ID'):
+    """Reseed identity column to 0 if table is empty"""
+    try:
+        cursor = conn.cursor()
+        # Check if table is empty
+        cursor.execute(f"SELECT COUNT(*) FROM {schema_name}.{table_name}")
+        row_count = cursor.fetchone()[0]
+        
+        if row_count == 0:
+            # Reseed identity to 0
+            cursor.execute(f"DBCC CHECKIDENT ('{schema_name}.{table_name}', RESEED, 0)")
+            conn.commit()
+            print(f"  [OK] Reseeded identity column for {schema_name}.{table_name} to 0 (table is empty)")
+        cursor.close()
+    except Exception as e:
+        # Ignore errors - table might not exist yet or might not have identity column
+        pass
+
 def create_competitors_table_if_not_exists(conn):
     """Create the Competitors table if it doesn't exist"""
     try:
@@ -106,6 +124,8 @@ def create_competitors_table_if_not_exists(conn):
             print("[OK] Competitors table created successfully")
         else:
             print("[OK] Competitors table already exists")
+            # Reseed identity if table is empty
+            reseed_identity_if_empty(conn, 'sResults', 'Competitors', 'ID')
         
         cursor.close()
     except Exception as e:
@@ -248,6 +268,8 @@ def create_showclass_table_if_not_exists(conn):
                 
                 if has_new_structure:
                     print("[OK] ShowClass table already exists with correct structure")
+                    # Reseed identity if table is empty
+                    reseed_identity_if_empty(conn, 'sResults', 'ShowClass', 'ID')
                 else:
                     print("[WARNING] ShowClass table exists but structure is unknown. Please verify manually.")
         
@@ -290,6 +312,8 @@ def create_horse_table_if_not_exists(conn):
             print("[OK] Horse table created successfully")
         else:
             print("[OK] Horse table already exists")
+            # Reseed identity if table is empty
+            reseed_identity_if_empty(conn, 'sResults', 'Horse', 'ID')
         
         cursor.close()
     except Exception as e:
@@ -347,6 +371,8 @@ def create_showresults_table_if_not_exists(conn):
             print("[OK] ShowResults table created successfully")
         else:
             print("[OK] ShowResults table already exists")
+            # Reseed identity if table is empty
+            reseed_identity_if_empty(conn, 'sResults', 'ShowResults', 'ID')
         
         cursor.close()
     except Exception as e:
@@ -1129,11 +1155,48 @@ def get_or_create_horse(conn, horse_name, owner_id=None):
         cursor.close()
 
 def save_show_result_to_database(conn, show_class_id, entry_details):
-    """Save entry detail result to ShowResults table"""
+    """Save entry detail result to ShowResults table (with duplicate check)"""
     if not entry_details:
         return False
     
     cursor = conn.cursor()
+    
+    try:
+        # Check for duplicate entry in this class
+        entry_number = entry_details.get('Entry', '').strip() if entry_details.get('Entry') else None
+        place = None
+        try:
+            place_str = entry_details.get('Place', '').strip()
+            if place_str:
+                place = int(place_str)
+        except:
+            pass
+        
+        # Check if this entry already exists for this class
+        if entry_number:
+            cursor.execute("""
+                SELECT COUNT(*) 
+                FROM sResults.ShowResults 
+                WHERE ShowClassID = ? AND Entry = ?
+            """, show_class_id, entry_number)
+        elif place is not None:
+            cursor.execute("""
+                SELECT COUNT(*) 
+                FROM sResults.ShowResults 
+                WHERE ShowClassID = ? AND Place = ?
+            """, show_class_id, place)
+        else:
+            # Can't check for duplicates without entry number or place
+            pass
+        
+        if entry_number or place is not None:
+            duplicate_count = cursor.fetchone()[0]
+            if duplicate_count > 0:
+                return False  # Duplicate entry, don't save
+        
+    except Exception as e:
+        # If duplicate check fails, continue anyway
+        pass
     
     try:
         # Get or create competitor IDs for Rider and Trainer
@@ -1651,6 +1714,26 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
         for pass2_idx, (row_idx, show_class_id, entries) in enumerate(class_data_list, 1):
             try:
                 print(f"  Processing entry details {pass2_idx}/{len(class_data_list)} (row {row_idx})...")
+                
+                # Get class details (Entries and Placings) for validation
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT Entries, Placings 
+                        FROM sResults.ShowClass 
+                        WHERE ID = ?
+                    """, show_class_id)
+                    class_row_data = cursor.fetchone()
+                    max_entries = class_row_data[0] if class_row_data and class_row_data[0] is not None else None
+                    max_placings = class_row_data[1] if class_row_data and class_row_data[1] is not None else None
+                    cursor.close()
+                except:
+                    max_entries = None
+                    max_placings = None
+                
+                # Track unique entries to prevent duplicates
+                seen_entries = set()
+                saved_count = 0
                 
                 # Re-find the grid and row
                 grid = driver.find_element(By.CSS_SELECTOR, 
