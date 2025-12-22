@@ -4,3 +4,5 @@ SELECT [ID]
       ,[CreatedDate]
       ,[UpdatedDate]
   FROM [HorseShows].[sResults].[Horse]
+
+  --delete [HorseShows].[sResults].[Horse]
