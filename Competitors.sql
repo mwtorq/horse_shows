@@ -6,4 +6,6 @@ SELECT [ID]
       ,[UpdatedDate]
   FROM [HorseShows].[sResults].[Competitors]
 
+  select * from [HorseShows].[sResults].[Competitors] where rider like '%waelterman%'
+
   --delete [HorseShows].[sResults].[Competitors]
