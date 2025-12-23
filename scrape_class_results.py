@@ -14,6 +14,35 @@ from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
 import time
 import pyodbc
+def retry_on_stale_element(operation_func, max_retries=3, delay=0.5, *args, **kwargs):
+    """Helper function to retry an operation on StaleElementReferenceException
+    
+    Args:
+        operation_func: Function to execute that may throw StaleElementReferenceException
+        max_retries: Maximum number of retry attempts (default: 3)
+        delay: Delay between retries in seconds (default: 0.5)
+        *args, **kwargs: Arguments to pass to operation_func
+    
+    Returns:
+        Result of operation_func, or None if all retries failed
+    """
+    last_exception = None
+    for attempt in range(max_retries):
+        try:
+            return operation_func(*args, **kwargs)
+        except StaleElementReferenceException as e:
+            last_exception = e
+            if attempt < max_retries - 1:
+                time.sleep(delay)
+                continue
+            else:
+                # Last attempt failed, return None or re-raise based on context
+                return None
+        except Exception as e:
+            # Don't retry on other exceptions, re-raise immediately
+            raise
+    
+    return None
 
 def setup_driver(headless=True):
     """Setup Chrome WebDriver"""
@@ -706,46 +735,105 @@ def select_year(driver, year):
         print(f"  [ERROR] Error selecting year {year}: {e}")
         return False
 
-def get_show_data_from_database(conn, skip_processed=True):
+def get_show_list_id_from_guid(conn, show_guid):
+    """Get ShowListID from ShowGUID"""
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT ID 
+            FROM sResults.ShowList 
+            WHERE ShowGUID = ?
+        """, show_guid)
+        result = cursor.fetchone()
+        cursor.close()
+        if result:
+            return result[0]
+        return None
+    except Exception as e:
+        print(f"[ERROR] Error getting ShowListID from ShowGUID {show_guid}: {e}")
+        return None
+
+def get_show_data_from_database(conn, skip_processed=True, start_from_show_guid=None):
     """Get ID, ShowGUID, Year, and ShowName from ShowList table where EndDate < today, ordered by ID
     
     Args:
         conn: Database connection
         skip_processed: If True, skip shows that already have ShowClass or ShowResults data
+        start_from_show_guid: Optional ShowGUID to start from (only processes ShowListID >= that ShowGUID's ID)
     """
     try:
         cursor = conn.cursor()
         
+        # Get starting ShowListID if ShowGUID provided
+        start_from_id = None
+        if start_from_show_guid:
+            start_from_id = get_show_list_id_from_guid(conn, start_from_show_guid)
+            if start_from_id:
+                print(f"[INFO] Starting from ShowGUID {start_from_show_guid} (ShowListID: {start_from_id})")
+            else:
+                print(f"[WARNING] ShowGUID {start_from_show_guid} not found, ignoring --start-from parameter")
+        
         if skip_processed:
             # Get shows that don't have existing ShowClass or ShowResults data
-            cursor.execute("""
-                SELECT sl.ID, sl.ShowGUID, sl.Year, sl.ShowName 
-                FROM sResults.ShowList sl
-                WHERE sl.ShowGUID IS NOT NULL AND sl.ShowGUID != ''
-                AND sl.StartDate IS NOT NULL
-                AND CAST(sl.EndDate AS DATE) < CAST(GETDATE() AS DATE)
-                AND NOT EXISTS (
-                    SELECT 1 FROM sResults.ShowClass sc 
-                    WHERE sc.ShowListID = sl.ID
-                )
-                AND NOT EXISTS (
-                    SELECT 1 FROM sResults.ShowResults sr
-                    INNER JOIN sResults.ShowClass sc2 ON sr.ShowClassID = sc2.ID
-                    WHERE sc2.ShowListID = sl.ID
-                )
-                ORDER BY sl.ID
-            """)
+            if start_from_id:
+                cursor.execute("""
+                    SELECT sl.ID, sl.ShowGUID, sl.Year, sl.ShowName 
+                    FROM sResults.ShowList sl
+                    WHERE sl.ShowGUID IS NOT NULL AND sl.ShowGUID != ''
+                    AND sl.StartDate IS NOT NULL
+                    AND CAST(sl.EndDate AS DATE) < CAST(GETDATE() AS DATE)
+                    AND sl.ID >= ?
+                    AND NOT EXISTS (
+                        SELECT 1 FROM sResults.ShowClass sc 
+                        WHERE sc.ShowListID = sl.ID
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1 FROM sResults.ShowResults sr
+                        INNER JOIN sResults.ShowClass sc2 ON sr.ShowClassID = sc2.ID
+                        WHERE sc2.ShowListID = sl.ID
+                    )
+                    ORDER BY sl.ID
+                """, start_from_id)
+            else:
+                cursor.execute("""
+                    SELECT sl.ID, sl.ShowGUID, sl.Year, sl.ShowName 
+                    FROM sResults.ShowList sl
+                    WHERE sl.ShowGUID IS NOT NULL AND sl.ShowGUID != ''
+                    AND sl.StartDate IS NOT NULL
+                    AND CAST(sl.EndDate AS DATE) < CAST(GETDATE() AS DATE)
+                    AND NOT EXISTS (
+                        SELECT 1 FROM sResults.ShowClass sc 
+                        WHERE sc.ShowListID = sl.ID
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1 FROM sResults.ShowResults sr
+                        INNER JOIN sResults.ShowClass sc2 ON sr.ShowClassID = sc2.ID
+                        WHERE sc2.ShowListID = sl.ID
+                    )
+                    ORDER BY sl.ID
+                """)
             print("[OK] Filtering out shows with existing ShowClass or ShowResults data")
         else:
             # Get all shows regardless of existing data
-            cursor.execute("""
-                SELECT ID, ShowGUID, Year, ShowName 
-                FROM sResults.ShowList 
-                WHERE ShowGUID IS NOT NULL AND ShowGUID != ''
-                AND StartDate IS NOT NULL
-                AND CAST(EndDate AS DATE) < CAST(GETDATE() AS DATE)
-                ORDER BY ID
-            """)
+            if start_from_id:
+                cursor.execute("""
+                    SELECT ID, ShowGUID, Year, ShowName 
+                    FROM sResults.ShowList 
+                    WHERE ShowGUID IS NOT NULL AND ShowGUID != ''
+                    AND StartDate IS NOT NULL
+                    AND CAST(EndDate AS DATE) < CAST(GETDATE() AS DATE)
+                    AND ID >= ?
+                    ORDER BY ID
+                """, start_from_id)
+            else:
+                cursor.execute("""
+                    SELECT ID, ShowGUID, Year, ShowName 
+                    FROM sResults.ShowList 
+                    WHERE ShowGUID IS NOT NULL AND ShowGUID != ''
+                    AND StartDate IS NOT NULL
+                    AND CAST(EndDate AS DATE) < CAST(GETDATE() AS DATE)
+                    ORDER BY ID
+                """)
         
         show_data = [(row[0], row[1], row[2], row[3]) for row in cursor.fetchall()]
         cursor.close()
@@ -757,39 +845,79 @@ def get_show_data_from_database(conn, skip_processed=True):
         traceback.print_exc()
         return []
 
-def get_shows_with_missing_classes(conn):
+def get_shows_with_missing_classes(conn, start_from_show_guid=None):
     """Get shows that have ShowClass rows with Placings > 0 that don't have corresponding ShowResults
+    
+    Args:
+        conn: Database connection
+        start_from_show_guid: Optional ShowGUID to start from (only processes ShowListID >= that ShowGUID's ID)
     
     Returns: List of tuples (show_list_id, show_guid, year, show_name, list of ShowClass IDs to process)
     """
     try:
         cursor = conn.cursor()
         
+        # Get starting ShowListID if ShowGUID provided
+        start_from_id = None
+        if start_from_show_guid:
+            start_from_id = get_show_list_id_from_guid(conn, start_from_show_guid)
+            if start_from_id:
+                print(f"[INFO] Starting from ShowGUID {start_from_show_guid} (ShowListID: {start_from_id})")
+            else:
+                print(f"[WARNING] ShowGUID {start_from_show_guid} not found, ignoring --start-from parameter")
+        
         # Find shows that have ShowClass rows with Placings > 0 that don't have ShowResults
-        cursor.execute("""
-            SELECT DISTINCT
-                sl.ID,
-                sl.ShowGUID,
-                sl.Year,
-                sl.ShowName
-            FROM sResults.ShowList sl
-            WHERE sl.ShowGUID IS NOT NULL AND sl.ShowGUID != ''
-            AND sl.StartDate IS NOT NULL
-            AND CAST(sl.EndDate AS DATE) < CAST(GETDATE() AS DATE)
-            -- Has ShowClass rows with Placings > 0 that don't have ShowResults
-            AND EXISTS (
-                SELECT 1
-                FROM sResults.ShowClass sc
-                WHERE sc.ShowListID = sl.ID
-                AND sc.Placings > 0
-                AND NOT EXISTS (
-                    SELECT 1 
-                    FROM sResults.ShowResults sr
-                    WHERE sr.ShowClassID = sc.ID
+        if start_from_id:
+            cursor.execute("""
+                SELECT DISTINCT
+                    sl.ID,
+                    sl.ShowGUID,
+                    sl.Year,
+                    sl.ShowName
+                FROM sResults.ShowList sl
+                WHERE sl.ShowGUID IS NOT NULL AND sl.ShowGUID != ''
+                AND sl.StartDate IS NOT NULL
+                AND CAST(sl.EndDate AS DATE) < CAST(GETDATE() AS DATE)
+                AND sl.ID >= ?
+                -- Has ShowClass rows with Placings > 0 that don't have ShowResults
+                AND EXISTS (
+                    SELECT 1
+                    FROM sResults.ShowClass sc
+                    WHERE sc.ShowListID = sl.ID
+                    AND sc.Placings > 0
+                    AND NOT EXISTS (
+                        SELECT 1 
+                        FROM sResults.ShowResults sr
+                        WHERE sr.ShowClassID = sc.ID
+                    )
                 )
-            )
-            ORDER BY sl.ID
-        """)
+                ORDER BY sl.ID
+            """, start_from_id)
+        else:
+            cursor.execute("""
+                SELECT DISTINCT
+                    sl.ID,
+                    sl.ShowGUID,
+                    sl.Year,
+                    sl.ShowName
+                FROM sResults.ShowList sl
+                WHERE sl.ShowGUID IS NOT NULL AND sl.ShowGUID != ''
+                AND sl.StartDate IS NOT NULL
+                AND CAST(sl.EndDate AS DATE) < CAST(GETDATE() AS DATE)
+                -- Has ShowClass rows with Placings > 0 that don't have ShowResults
+                AND EXISTS (
+                    SELECT 1
+                    FROM sResults.ShowClass sc
+                    WHERE sc.ShowListID = sl.ID
+                    AND sc.Placings > 0
+                    AND NOT EXISTS (
+                        SELECT 1 
+                        FROM sResults.ShowResults sr
+                        WHERE sr.ShowClassID = sc.ID
+                    )
+                )
+                ORDER BY sl.ID
+            """)
         
         show_data = cursor.fetchall()
         result = []
@@ -1037,60 +1165,71 @@ def expand_row(driver, row_id):
         if not row_id:
             return False
         
-        # Re-find the row element by ID (always fresh)
-        try:
-            row_element = driver.find_element(By.ID, row_id)
-        except:
+        # Re-find the row element by ID with retry
+        def find_row():
+            return driver.find_element(By.ID, row_id)
+        
+        row_element = retry_on_stale_element(find_row, max_retries=3, delay=0.3)
+        if not row_element:
             return False
         
         # DevExpress detail rows: first cell has class dxgvDetailButton_Office2010Blue
-        try:
-            first_cell = row_element.find_element(By.TAG_NAME, "td")
-            first_cell_class = first_cell.get_attribute('class') or ''
-        except StaleElementReferenceException:
-            # Re-find again if stale
-            try:
-                row_element = driver.find_element(By.ID, row_id)
-                first_cell = row_element.find_element(By.TAG_NAME, "td")
-                first_cell_class = first_cell.get_attribute('class') or ''
-            except Exception as e:
+        def get_first_cell():
+            cell = row_element.find_element(By.TAG_NAME, "td")
+            return cell, cell.get_attribute('class') or ''
+        
+        result = retry_on_stale_element(get_first_cell, max_retries=3, delay=0.3)
+        if result:
+            first_cell, first_cell_class = result
+        else:
+            # If retry failed, try one more time to re-find row
+            row_element = retry_on_stale_element(find_row, max_retries=2, delay=0.3)
+            if not row_element:
                 return False
+            result = retry_on_stale_element(get_first_cell, max_retries=2, delay=0.3)
+            if not result:
+                return False
+            first_cell, first_cell_class = result
         
         # Check if this is a detail button cell
         if 'dxgvDetailButton' in first_cell_class:
-            # Look for the expand/collapse image
-            detail_images = first_cell.find_elements(By.TAG_NAME, "img")
+            # Look for the expand/collapse image with retry
+            def get_detail_images():
+                return first_cell.find_elements(By.TAG_NAME, "img")
             
-            for img in detail_images:
-                img_class = img.get_attribute('class') or ''
-                img_onclick = img.get_attribute('onclick') or ''
-                
-                # Check if already expanded (has collapse button with GVHideDetailRow)
-                if 'gvDetailExpandedButton' in img_class or 'GVHideDetailRow' in img_onclick:
-                    # Already expanded
-                    return True
-                
-                # Check if it's an expand button (GVShowDetailRow)
-                if 'GVShowDetailRow' in img_onclick or ('gvDetail' in img_class and 'Expanded' not in img_class):
-                    # Click to expand
-                    driver.execute_script("arguments[0].click();", img)
-                    # Reduced sleep - WebDriverWait will be used after expansion
-                    return True
+            detail_images = retry_on_stale_element(get_detail_images, max_retries=3, delay=0.3)
+            if detail_images:
+                for img in detail_images:
+                    try:
+                        img_class = retry_on_stale_element(lambda: img.get_attribute('class') or '', max_retries=2, delay=0.2)
+                        img_onclick = retry_on_stale_element(lambda: img.get_attribute('onclick') or '', max_retries=2, delay=0.2)
+                        
+                        # Check if already expanded (has collapse button with GVHideDetailRow)
+                        if img_class and ('gvDetailExpandedButton' in img_class or 'GVHideDetailRow' in (img_onclick or '')):
+                            # Already expanded
+                            return True
+                        
+                        # Check if it's an expand button (GVShowDetailRow)
+                        if img_onclick and ('GVShowDetailRow' in img_onclick or (img_class and 'gvDetail' in img_class and 'Expanded' not in img_class)):
+                            # Click to expand
+                            driver.execute_script("arguments[0].click();", img)
+                            return True
+                    except:
+                        continue
             
             # If no specific image found, try clicking the first cell
             driver.execute_script("arguments[0].click();", first_cell)
-            # Reduced sleep - WebDriverWait will be used after expansion
             return True
         
         # Fallback: Try to find expand button in first cell (older method)
-        expand_images = first_cell.find_elements(By.CSS_SELECTOR, 
-            "img[src*='Plus'], img[src*='plus'], img[src*='Expand'], img[src*='expand']")
+        def get_expand_buttons():
+            expand_images = first_cell.find_elements(By.CSS_SELECTOR, 
+                "img[src*='Plus'], img[src*='plus'], img[src*='Expand'], img[src*='expand']")
+            expand_links = first_cell.find_elements(By.CSS_SELECTOR, 
+                "a.dxgvCommandColumnItem, a[onclick*='Expand'], a[onclick*='expand']")
+            return expand_images + expand_links
         
-        expand_links = first_cell.find_elements(By.CSS_SELECTOR, 
-            "a.dxgvCommandColumnItem, a[onclick*='Expand'], a[onclick*='expand']")
-        
-        expand_buttons = expand_images + expand_links
-        
+        expand_buttons = retry_on_stale_element(get_expand_buttons, max_retries=3, delay=0.3)
         if expand_buttons:
             driver.execute_script("arguments[0].click();", expand_buttons[0])
             time.sleep(0.5)
@@ -1148,7 +1287,7 @@ def collapse_row(driver, row_id):
 
 def extract_entry_details_from_row(row_element, entry_column_map):
     """Extract entry detail data from a row"""
-    try:
+    def extract_cells():
         cells = row_element.find_elements(By.TAG_NAME, "td")
         if len(cells) < 3:
             return None
@@ -1161,6 +1300,10 @@ def extract_entry_details_from_row(row_element, entry_column_map):
                 entry_data[field] = ''
         
         return entry_data
+    
+    try:
+        result = retry_on_stale_element(extract_cells, max_retries=3, delay=0.3)
+        return result
     except Exception as e:
         print(f"      [WARNING] Error extracting entry details: {e}")
         return None
@@ -1719,6 +1862,44 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
         # If show_class_ids is provided, skip PASS 1 and query database for class info
         if show_class_ids:
             print(f"\n  Skipping PASS 1 (class summaries already in database)")
+            print(f"  Building lookup map from grid rows...")
+            
+            # Build a lookup map: (Class, ClassName) -> row_index (case-insensitive keys)
+            grid_lookup = {}  # Key: (class.lower(), class_name.lower()), Value: row_index (1-based)
+            
+            for idx, class_row in enumerate(class_rows, 1):
+                def extract_class_info():
+                    cells = class_row.find_elements(By.TAG_NAME, "td")
+                    if len(cells) < 3:
+                        return None, None
+                    
+                    # Get Class and ClassName from grid row
+                    class_col_idx = class_column_map.get('Class')
+                    class_name_col_idx = class_column_map.get('Class Name')
+                    
+                    if class_col_idx is not None and len(cells) > class_col_idx:
+                        grid_class = cells[class_col_idx].text.strip()
+                    else:
+                        grid_class = ''
+                    
+                    if class_name_col_idx is not None and len(cells) > class_name_col_idx:
+                        grid_class_name = cells[class_name_col_idx].text.strip()
+                    else:
+                        grid_class_name = ''
+                    
+                    return grid_class, grid_class_name
+                
+                try:
+                    result = retry_on_stale_element(extract_class_info, max_retries=3, delay=0.3)
+                    if result and result[0] is not None:
+                        grid_class, grid_class_name = result
+                        # Use case-insensitive keys for lookup
+                        lookup_key = (grid_class.lower(), grid_class_name.lower())
+                        grid_lookup[lookup_key] = idx
+                except:
+                    continue
+            
+            print(f"  Built lookup map with {len(grid_lookup)} entries")
             print(f"  Loading class information from database for {len(show_class_ids)} classes...")
             
             # Query database to get Class and ClassName for each ShowClass ID
@@ -1738,41 +1919,15 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                         entries = class_row_data[2] if class_row_data[2] is not None else 0
                         placings = class_row_data[3] if class_row_data[3] is not None else 0
                         
-                        # Find the matching row in the grid
-                        row_index = None
-                        for idx, class_row in enumerate(class_rows, 1):
-                            try:
-                                cells = class_row.find_elements(By.TAG_NAME, "td")
-                                if len(cells) < 3:
-                                    continue
-                                
-                                # Get Class and ClassName from grid row
-                                class_col_idx = class_column_map.get('Class')
-                                class_name_col_idx = class_column_map.get('Class Name')
-                                
-                                if class_col_idx is not None and len(cells) > class_col_idx:
-                                    grid_class = cells[class_col_idx].text.strip()
-                                else:
-                                    grid_class = ''
-                                
-                                if class_name_col_idx is not None and len(cells) > class_name_col_idx:
-                                    grid_class_name = cells[class_name_col_idx].text.strip()
-                                else:
-                                    grid_class_name = ''
-                                
-                                # Match by Class and ClassName (case-insensitive)
-                                if (str(class_num).strip().lower() == grid_class.lower() and 
-                                    class_name.strip().lower() == grid_class_name.lower()):
-                                    row_index = idx
-                                    break
-                            except:
-                                continue
+                        # Look up the matching row in the grid using the lookup map
+                        lookup_key = (str(class_num).strip().lower(), class_name.strip().lower())
+                        row_index = grid_lookup.get(lookup_key)
                         
                         if row_index:
                             class_data_list.append((row_index, show_class_id, entries))
-                            print(f"    Found row {row_index} for Class {class_num}: {class_name[:30]}")
+                            print(f"    Found row {row_index} for Class {class_num}: {class_name[:50]}")
                         else:
-                            print(f"    [WARNING] Could not find grid row for Class {class_num}: {class_name[:30]}")
+                            print(f"    [WARNING] Could not find grid row for Class {class_num}: {class_name[:50]}")
                     else:
                         print(f"    [WARNING] ShowClass ID {show_class_id} not found in database")
             finally:
@@ -1792,7 +1947,7 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                         cells = r.find_elements(By.TAG_NAME, "td, th")
                         cell_text = ''
                         if cells:
-                            cell_text = cells[0].text[:30] if cells[0].text else 'empty'
+                            cell_text = cells[0].text[:50] if cells[0].text else 'empty'
                         print(f"    Row {i+1}: id='{row_id[:60]}', class='{row_class[:60]}', cells={len(cells)}, first_cell='{cell_text}'")
             
             # PASS 1: Extract all class summary data and save to ShowClass table
@@ -1822,17 +1977,22 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                     except:
                         pass
 
-                    # Extract class summary data
-                    cells = class_row.find_elements(By.TAG_NAME, "td")
-                    if len(cells) < 3:
+                    # Extract class summary data with retry on stale element
+                    def get_cells_and_extract():
+                        cells = class_row.find_elements(By.TAG_NAME, "td")
+                        if len(cells) < 3:
+                            return None
+                        class_summary = {}
+                        for field, idx in class_column_map.items():
+                            if idx is not None and len(cells) > idx:
+                                class_summary[field] = cells[idx].text.strip()
+                            else:
+                                class_summary[field] = ''
+                        return class_summary
+                    
+                    class_summary = retry_on_stale_element(get_cells_and_extract, max_retries=3, delay=0.3)
+                    if not class_summary:
                         continue
-
-                    class_summary = {}
-                    for field, idx in class_column_map.items():
-                        if idx is not None and len(cells) > idx:
-                            class_summary[field] = cells[idx].text.strip()
-                        else:
-                            class_summary[field] = ''
 
                     # Debug: Print first few cells to understand structure
                     if row_idx == 1:
@@ -1885,7 +2045,7 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                         print(f"    Skipping row with non-numeric Entries: '{entries}'")
                         continue
 
-                    print(f"    Class: {class_summary.get('Class', 'N/A')}, Class Name: {class_summary.get('Class Name', 'N/A')[:30]}, Entries: {entries}, Placings: {placings}")
+                    print(f"    Class: {class_summary.get('Class', 'N/A')}, Class Name: {class_summary.get('Class Name', 'N/A')[:50]}, Entries: {entries}, Placings: {placings}")
 
                     # Save ShowClass to database (save all classes, even with 0 entries)
                     show_class_id = get_or_create_showclass(conn, show_list_id, class_summary)
@@ -2026,15 +2186,23 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                             # DevExpress often uses a pattern like: DataRow -> DetailRow
                             detail_rows = []
                             
-                            # Try multiple strategies to find detail rows
-                            # Strategy 1: Look for grPlacing grids (nested result grids) following the class row
-                            try:
-                                class_row_id = class_row.get_attribute('id')
-                                if class_row_id:
-                                    # Get the grid table
-                                    grid = driver.find_element(By.CSS_SELECTOR,
-                                        "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
-                                    all_trs = grid.find_elements(By.TAG_NAME, "tr")
+                            # Try multiple strategies to find detail rows (with retry on stale element)
+                            max_strategy_retries = 3
+                            strategy_retry_delay = 0.5
+                            strategy_success = False
+                            
+                            for strategy_attempt in range(max_strategy_retries):
+                                if strategy_success:
+                                    break
+                                
+                                try:
+                                    # Strategy 1: Look for grPlacing grids (nested result grids) following the class row
+                                    class_row_id = class_row.get_attribute('id')
+                                    if class_row_id:
+                                        # Get the grid table
+                                        grid = driver.find_element(By.CSS_SELECTOR,
+                                            "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+                                        all_trs = grid.find_elements(By.TAG_NAME, "tr")
                                     
                                     # Find the class row index
                                     class_row_idx = -1
@@ -2075,122 +2243,172 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                                         
                                         if detail_rows:
                                             print(f"      Strategy 1 found {len(detail_rows)} detail rows in grPlacing grids")
-                            except Exception as e:
-                                print(f"      Strategy 1 error: {e}")
-                            
-                            # Strategy 2: Look for nested grid (grPlacing) inside detail container following the class row
-                            if not detail_rows:
-                                try:
-                                    # Re-find grid and all rows
-                                    grid = driver.find_element(By.CSS_SELECTOR,
-                                        "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
-                                    all_rows = grid.find_elements(By.TAG_NAME, "tr")
-                                    
-                                    # Find current row index
-                                    current_idx = -1
-                                    class_row_id = class_row.get_attribute('id') or ''
-                                    for i, r in enumerate(all_rows):
-                                        if r.get_attribute('id') == class_row_id:
-                                            current_idx = i
+                                            strategy_success = True
                                             break
-                                    
-                                    if current_idx >= 0:
-                                        # Look for the detail container row that follows this class row
-                                        # Detail containers typically have IDs like dxdt1, dxdt2, etc.
-                                        for i in range(current_idx + 1, len(all_rows)):
-                                            next_row = all_rows[i]
-                                            next_row_id = next_row.get_attribute('id') or ''
-                                            next_row_class = next_row.get_attribute('class') or ''
+                                except StaleElementReferenceException as e:
+                                    if strategy_attempt < max_strategy_retries - 1:
+                                        print(f"      Strategy 1 stale element (attempt {strategy_attempt + 1}/{max_strategy_retries}), retrying all strategies...")
+                                        time.sleep(strategy_retry_delay)
+                                        detail_rows = []  # Reset for retry
+                                        raise  # Re-raise to trigger outer retry loop
+                                    else:
+                                        print(f"      Strategy 1 error (final attempt): {e}")
+                                except Exception as e:
+                                    print(f"      Strategy 1 error: {e}")
+                                
+                                    # Strategy 2: Look for nested grid (grPlacing) inside detail container following the class row
+                                    if not detail_rows:
+                                        try:
+                                            # Re-find grid and all rows
+                                            grid = driver.find_element(By.CSS_SELECTOR,
+                                                "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+                                            all_rows = grid.find_elements(By.TAG_NAME, "tr")
                                             
-                                            # If this is another class row, stop
-                                            if 'DataRow' in next_row_id and 'dxdt' not in next_row_id and 'Detail' not in next_row_id.lower() and 'dxgvDetailRow' not in next_row_class:
-                                                # Check if it's actually a class row by looking for class number in first cells
-                                                cells = next_row.find_elements(By.TAG_NAME, "td")
-                                                if len(cells) >= 2:
-                                                    # Skip detail button cell
-                                                    cell_text = cells[1].text.strip() if len(cells) > 1 else ''
-                                                    # If it looks like a class number (numeric), it's a new class row
-                                                    if cell_text and (cell_text.isdigit() or cell_text == ''):
-                                                        break
+                                            # Find current row index
+                                            current_idx = -1
+                                            class_row_id = class_row.get_attribute('id') or ''
+                                            for i, r in enumerate(all_rows):
+                                                if r.get_attribute('id') == class_row_id:
+                                                    current_idx = i
+                                                    break
                                             
-                                            # Look for nested grids (grPlacing) inside this row
-                                            nested_grids = next_row.find_elements(By.CSS_SELECTOR, "table[id*='grPlacing']")
-                                            for nested_grid in nested_grids:
-                                                # Store reference to the grid for column mapping
-                                                placing_grid_table = nested_grid
-                                                # Find data rows in the nested grid
-                                                nested_rows = nested_grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow'], tr.dxgvDataRow")
+                                            if current_idx >= 0:
+                                                # Look for the detail container row that follows this class row
+                                                # Detail containers typically have IDs like dxdt1, dxdt2, etc.
+                                                for i in range(current_idx + 1, len(all_rows)):
+                                                    next_row = all_rows[i]
+                                                    next_row_id = next_row.get_attribute('id') or ''
+                                                    next_row_class = next_row.get_attribute('class') or ''
+                                                    
+                                                    # If this is another class row, stop
+                                                    if 'DataRow' in next_row_id and 'dxdt' not in next_row_id and 'Detail' not in next_row_id.lower() and 'dxgvDetailRow' not in next_row_class:
+                                                        # Check if it's actually a class row by looking for class number in first cells
+                                                        cells = next_row.find_elements(By.TAG_NAME, "td")
+                                                        if len(cells) >= 2:
+                                                            # Skip detail button cell
+                                                            cell_text = cells[1].text.strip() if len(cells) > 1 else ''
+                                                            # If it looks like a class number (numeric), it's a new class row
+                                                            if cell_text and (cell_text.isdigit() or cell_text == ''):
+                                                                break
+                                                    
+                                                    # Look for nested grids (grPlacing) inside this row
+                                                    nested_grids = next_row.find_elements(By.CSS_SELECTOR, "table[id*='grPlacing']")
+                                                    for nested_grid in nested_grids:
+                                                        # Store reference to the grid for column mapping
+                                                        placing_grid_table = nested_grid
+                                                        # Find data rows in the nested grid
+                                                        nested_rows = nested_grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow'], tr.dxgvDataRow")
+                                                        for nr in nested_rows:
+                                                            nr_id = nr.get_attribute('id') or ''
+                                                            nr_class = nr.get_attribute('class') or ''
+                                                            cells = nr.find_elements(By.TAG_NAME, "td")
+                                                            # Result rows have many columns (Place, Entry, Horse, Rider, etc.)
+                                                            if len(cells) >= 10 and 'HeaderRow' not in nr_id and 'FilterRow' not in nr_id:
+                                                                # Store tuple of (row, grid_table) for column mapping
+                                                                detail_rows.append((nr, placing_grid_table))
+                                                
+                                                if detail_rows:
+                                                    print(f"      Strategy 2 found {len(detail_rows)} detail rows (checked {len(all_rows)} total rows, started at index {current_idx})")
+                                                    strategy_success = True
+                                                    break
+                                        except StaleElementReferenceException as e:
+                                            if strategy_attempt < max_strategy_retries - 1:
+                                                print(f"      Strategy 2 stale element (attempt {strategy_attempt + 1}/{max_strategy_retries}), retrying all strategies...")
+                                                time.sleep(strategy_retry_delay)
+                                                detail_rows = []  # Reset for retry
+                                                raise  # Re-raise to trigger outer retry loop
+                                            else:
+                                                print(f"      Strategy 2 error (final attempt): {e}")
+                                        except Exception as e:
+                                            print(f"      Strategy 2 error: {e}")
+                                
+                                    # Strategy 3: Look for nested table within the row
+                                    if not detail_rows:
+                                        try:
+                                            nested_tables = class_row.find_elements(By.TAG_NAME, "table")
+                                            print(f"      Strategy 3: Found {len(nested_tables)} nested tables")
+                                            for nested_table in nested_tables:
+                                                nested_rows = nested_table.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow'], tr.dxgvDataRow, tr")
+                                                # Filter out header rows
+                                                filtered_rows = []
                                                 for nr in nested_rows:
-                                                    nr_id = nr.get_attribute('id') or ''
                                                     nr_class = nr.get_attribute('class') or ''
-                                                    cells = nr.find_elements(By.TAG_NAME, "td")
-                                                    # Result rows have many columns (Place, Entry, Horse, Rider, etc.)
-                                                    if len(cells) >= 10 and 'HeaderRow' not in nr_id and 'FilterRow' not in nr_id:
-                                                        # Store tuple of (row, grid_table) for column mapping
-                                                        detail_rows.append((nr, placing_grid_table))
-                                        
-                                        print(f"      Strategy 2 found {len(detail_rows)} detail rows (checked {len(all_rows)} total rows, started at index {current_idx})")
-                                except Exception as e:
-                                    print(f"      Strategy 2 error: {e}")
-                            
-                            # Strategy 3: Look for nested table within the row
-                            if not detail_rows:
-                                try:
-                                    nested_tables = class_row.find_elements(By.TAG_NAME, "table")
-                                    print(f"      Strategy 3: Found {len(nested_tables)} nested tables")
-                                    for nested_table in nested_tables:
-                                        nested_rows = nested_table.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow'], tr.dxgvDataRow, tr")
-                                        # Filter out header rows
-                                        filtered_rows = []
-                                        for nr in nested_rows:
-                                            nr_class = nr.get_attribute('class') or ''
-                                            nr_id = nr.get_attribute('id') or ''
-                                            if 'HeaderRow' not in nr_id and 'FilterRow' not in nr_id:
-                                                cells = nr.find_elements(By.TAG_NAME, "td")
-                                                if len(cells) >= 3:  # Has enough cells to be a data row
-                                                    filtered_rows.append(nr)
-                                        if filtered_rows:
-                                            detail_rows = filtered_rows
-                                            print(f"      Strategy 3 found {len(detail_rows)} detail rows in nested table")
-                                            break
-                                except Exception as e:
-                                    print(f"      Strategy 3 error: {e}")
-                            
-                            # Strategy 4: Look for detail rows by checking following siblings more broadly
-                            if not detail_rows:
-                                try:
-                                    grid = driver.find_element(By.CSS_SELECTOR,
-                                        "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
-                                    all_rows = grid.find_elements(By.TAG_NAME, "tr")
-                                    class_row_id = class_row.get_attribute('id') or ''
-                                    current_idx = -1
-                                    for i, r in enumerate(all_rows):
-                                        if r.get_attribute('id') == class_row_id:
-                                            current_idx = i
-                                            break
-                                    
-                                    if current_idx >= 0:
-                                        # Look for the next 10 rows to find detail rows
-                                        for i in range(current_idx + 1, min(current_idx + 11, len(all_rows))):
-                                            next_row = all_rows[i]
-                                            cells = next_row.find_elements(By.TAG_NAME, "td")
-                                            next_row_id = next_row.get_attribute('id') or ''
-                                            next_row_class = next_row.get_attribute('class') or ''
+                                                    nr_id = nr.get_attribute('id') or ''
+                                                    if 'HeaderRow' not in nr_id and 'FilterRow' not in nr_id:
+                                                        cells = nr.find_elements(By.TAG_NAME, "td")
+                                                        if len(cells) >= 3:  # Has enough cells to be a data row
+                                                            filtered_rows.append(nr)
+                                                if filtered_rows:
+                                                    detail_rows = filtered_rows
+                                                    print(f"      Strategy 3 found {len(detail_rows)} detail rows in nested table")
+                                                    strategy_success = True
+                                                    break
+                                        except StaleElementReferenceException as e:
+                                            if strategy_attempt < max_strategy_retries - 1:
+                                                print(f"      Strategy 3 stale element (attempt {strategy_attempt + 1}/{max_strategy_retries}), retrying all strategies...")
+                                                time.sleep(strategy_retry_delay)
+                                                detail_rows = []  # Reset for retry
+                                                raise  # Re-raise to trigger outer retry loop
+                                            else:
+                                                print(f"      Strategy 3 error (final attempt): {e}")
+                                        except Exception as e:
+                                            print(f"      Strategy 3 error: {e}")
+                                
+                                    # Strategy 4: Look for detail rows by checking following siblings more broadly
+                                    if not detail_rows:
+                                        try:
+                                            grid = driver.find_element(By.CSS_SELECTOR,
+                                                "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+                                            all_rows = grid.find_elements(By.TAG_NAME, "tr")
+                                            class_row_id = class_row.get_attribute('id') or ''
+                                            current_idx = -1
+                                            for i, r in enumerate(all_rows):
+                                                if r.get_attribute('id') == class_row_id:
+                                                    current_idx = i
+                                                    break
                                             
-                                            # If this row has many cells (like a data row) and isn't a header
-                                            if len(cells) >= 10 and 'HeaderRow' not in next_row_id and 'FilterRow' not in next_row_id:
-                                                # Check if this could be a detail row by checking if it has Place/Entry/Horse columns
-                                                row_text = next_row.text.lower()
-                                                # Detail rows typically don't have class numbers but have placement info
-                                                if any(keyword in row_text for keyword in ['place', 'entry', 'horse', 'rider']):
-                                                    detail_rows.append(next_row)
-                                            # Stop if we hit another class row
-                                            elif 'DataRow' in next_row_id and 'Detail' not in next_row_id and current_idx != i:
-                                                break
-                                        
-                                        print(f"      Strategy 4 found {len(detail_rows)} detail rows")
-                                except Exception as e:
-                                    print(f"      Strategy 4 error: {e}")
+                                            if current_idx >= 0:
+                                                # Look for the next 10 rows to find detail rows
+                                                for i in range(current_idx + 1, min(current_idx + 11, len(all_rows))):
+                                                    next_row = all_rows[i]
+                                                    cells = next_row.find_elements(By.TAG_NAME, "td")
+                                                    next_row_id = next_row.get_attribute('id') or ''
+                                                    next_row_class = next_row.get_attribute('class') or ''
+                                                    
+                                                    # If this row has many cells (like a data row) and isn't a header
+                                                    if len(cells) >= 10 and 'HeaderRow' not in next_row_id and 'FilterRow' not in next_row_id:
+                                                        # Check if this could be a detail row by checking if it has Place/Entry/Horse columns
+                                                        row_text = next_row.text.lower()
+                                                        # Detail rows typically don't have class numbers but have placement info
+                                                        if any(keyword in row_text for keyword in ['place', 'entry', 'horse', 'rider']):
+                                                            detail_rows.append(next_row)
+                                                    # Stop if we hit another class row
+                                                    elif 'DataRow' in next_row_id and 'Detail' not in next_row_id and current_idx != i:
+                                                        break
+                                                
+                                                if detail_rows:
+                                                    print(f"      Strategy 4 found {len(detail_rows)} detail rows")
+                                                    strategy_success = True
+                                                    break
+                                        except StaleElementReferenceException as e:
+                                            if strategy_attempt < max_strategy_retries - 1:
+                                                print(f"      Strategy 4 stale element (attempt {strategy_attempt + 1}/{max_strategy_retries}), retrying all strategies...")
+                                                time.sleep(strategy_retry_delay)
+                                                detail_rows = []  # Reset for retry
+                                                raise  # Re-raise to trigger outer retry loop
+                                            else:
+                                                print(f"      Strategy 4 error (final attempt): {e}")
+                                        except Exception as e:
+                                            print(f"      Strategy 4 error: {e}")
+                                
+                                except StaleElementReferenceException as e:
+                                    # Outer catch for any stale element in strategies 1-4
+                                    if strategy_attempt < max_strategy_retries - 1:
+                                        print(f"      Stale element in strategies (attempt {strategy_attempt + 1}/{max_strategy_retries}), retrying all strategies...")
+                                        time.sleep(strategy_retry_delay)
+                                        detail_rows = []  # Reset for retry
+                                    else:
+                                        print(f"      Strategies failed after {max_strategy_retries} attempts: {e}")
                             
                             print(f"      Total found: {len(detail_rows)} entry detail rows")
                             
@@ -2238,7 +2456,7 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                                                 rider_val = entry_details.get('Rider', '').strip()
                                                 owner_val = entry_details.get('Owner', '').strip()
                                                 trainer_val = entry_details.get('Trainer', '').strip()
-                                                print(f"        Saved entry: Place {place_val if place_val else 'N/A'}, Rider: {rider_val[:30] if rider_val else 'N/A'}, Horse: {horse_val[:30] if horse_val else 'N/A'}, Owner: {owner_val[:30] if owner_val else 'N/A'}, Trainer: {trainer_val[:30] if trainer_val else 'N/A'}")
+                                                print(f"        Saved entry: Place {place_val if place_val else 'N/A'}, Rider: {rider_val[:50] if rider_val else 'N/A'}, Horse: {horse_val[:50] if horse_val else 'N/A'}, Owner: {owner_val[:50] if owner_val else 'N/A'}, Trainer: {trainer_val[:50] if trainer_val else 'N/A'}")
                                     else:
                                         print(f"        [WARNING] Skipping row (no column mapping)")
                             else:
@@ -2288,12 +2506,13 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
         traceback.print_exc()
         return results_count
 
-def main(skip_processed=True, load_missing_classes=False):
+def main(skip_processed=True, load_missing_classes=False, start_from_show_guid=None):
     """Main function to scrape class results
     
     Args:
         skip_processed: If True, skip shows that already have ShowClass or ShowResults data (default: True)
         load_missing_classes: If True, load only classes with Placings > 0 that don't have ShowResults (default: False)
+        start_from_show_guid: Optional ShowGUID to start from (only processes ShowListID >= that ShowGUID's ID)
     """
     print("\n" + "=" * 60)
     print("HorseShowsOnline - Class Results Scraper")
@@ -2331,7 +2550,7 @@ def main(skip_processed=True, load_missing_classes=False):
         # Get ShowGUIDs, Years, and ShowNames from database
         if load_missing_classes:
             print("Fetching shows with missing class results...")
-            show_data_list = get_shows_with_missing_classes(conn)
+            show_data_list = get_shows_with_missing_classes(conn, start_from_show_guid=start_from_show_guid)
             print(f"[OK] Found {len(show_data_list)} shows with missing classes\n")
             
             if not show_data_list:
@@ -2349,7 +2568,7 @@ def main(skip_processed=True, load_missing_classes=False):
                 time.sleep(2)
         else:
             print("Fetching ShowGUIDs, Years, and ShowNames from ShowList table...")
-            show_data_list = get_show_data_from_database(conn, skip_processed=skip_processed)
+            show_data_list = get_show_data_from_database(conn, skip_processed=skip_processed, start_from_show_guid=start_from_show_guid)
             print(f"[OK] Found {len(show_data_list)} shows\n")
             
             if not show_data_list:
@@ -2393,27 +2612,41 @@ if __name__ == '__main__':
     # Check for command-line arguments
     skip_processed = True
     load_missing_classes = False
+    start_from_show_guid = None
     
-    if len(sys.argv) > 1:
-        for arg in sys.argv[1:]:
-            arg_lower = arg.lower()
-            if arg_lower in ['--process-all', '-a', '--all']:
-                skip_processed = False
-                print("[INFO] Command-line argument detected: Will process all shows (including those with existing data)")
-            elif arg_lower in ['--load-missing', '-m', '--missing']:
-                load_missing_classes = True
-                print("[INFO] Command-line argument detected: Will load only missing class results")
-            elif arg_lower in ['--help', '-h']:
-                print("Usage: python scrape_class_results.py [OPTIONS]")
-                print("Options:")
-                print("  --process-all, -a, --all: Process all shows, including those with existing ShowClass or ShowResults data")
-                print("  --load-missing, -m, --missing: Load only missing class results (classes with Placings > 0 that don't have ShowResults)")
-                print("  Default: Skip shows with existing data")
-                sys.exit(0)
+    i = 1
+    while i < len(sys.argv):
+        arg = sys.argv[i]
+        arg_lower = arg.lower()
+        
+        if arg_lower in ['--process-all', '-a', '--all']:
+            skip_processed = False
+            print("[INFO] Command-line argument detected: Will process all shows (including those with existing data)")
+        elif arg_lower in ['--load-missing', '-m', '--missing']:
+            load_missing_classes = True
+            print("[INFO] Command-line argument detected: Will load only missing class results")
+        elif arg_lower in ['--start-from', '-s']:
+            if i + 1 < len(sys.argv):
+                start_from_show_guid = sys.argv[i + 1]
+                print(f"[INFO] Command-line argument detected: Will start from ShowGUID {start_from_show_guid}")
+                i += 1  # Skip the next argument as it's the ShowGUID value
+            else:
+                print("[ERROR] --start-from requires a ShowGUID value")
+                sys.exit(1)
+        elif arg_lower in ['--help', '-h']:
+            print("Usage: python scrape_class_results.py [OPTIONS]")
+            print("Options:")
+            print("  --process-all, -a, --all: Process all shows, including those with existing ShowClass or ShowResults data")
+            print("  --load-missing, -m, --missing: Load only missing class results (classes with Placings > 0 that don't have ShowResults)")
+            print("  --start-from SHOWGUID, -s SHOWGUID: Start processing from the specified ShowGUID (only processes ShowListID >= that ShowGUID's ID)")
+            print("  Default: Skip shows with existing data")
+            sys.exit(0)
+        
+        i += 1
     
     # load_missing_classes takes precedence over skip_processed
     if load_missing_classes:
         skip_processed = False
     
-    main(skip_processed=skip_processed, load_missing_classes=load_missing_classes)
+    main(skip_processed=skip_processed, load_missing_classes=load_missing_classes, start_from_show_guid=start_from_show_guid)
 
