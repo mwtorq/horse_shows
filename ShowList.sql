@@ -11,3 +11,5 @@ SELECT [ID]
       ,[CreatedDate]
       ,[UpdatedDate]
   FROM [HorseShows].[sResults].[ShowList]
+
+  select * from [HorseShows].[sResults].[ShowList] where showname like '%bridlespur%'
