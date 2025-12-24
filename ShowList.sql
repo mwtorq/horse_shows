@@ -12,4 +12,10 @@ SELECT [ID]
       ,[UpdatedDate]
   FROM [HorseShows].[sResults].[ShowList]
 
-  select * from [HorseShows].[sResults].[ShowList] where showname like '%bridlespur%'
+  select * from [HorseShows].[sResults].[ShowList] where showname like '%st%louis%kick%off%' and year=2025 --207
+  select * from [HorseShows].[sResults].[ShowList] where showname like '%monarch%' and year=2025 --258
+  select * from [HorseShows].[sResults].[ShowList] where showname like '%missouri state fair%' and year=2025 --329
+  select * from [HorseShows].[sResults].[ShowList] where showname like '%here comes the boom%' and year=2025 --520
+  select * from [HorseShows].[sResults].[ShowList] where showname like '%bridlespur horse%' and year=2025 --674
+
+  select * from [HorseShows].[sResults].[ShowList] where id in (207,258,329,520,674)

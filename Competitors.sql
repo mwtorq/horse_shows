@@ -13,4 +13,6 @@ SELECT [ID]
   select * from [HorseShows].[sResults].[Competitors] where owner like '%wilcox%'
   select * from [HorseShows].[sResults].[Competitors] where trainer like '%wilcox%'
 
+  select * from [HorseShows].[sResults].[Competitors] where id in (select riderid from [HorseShows].[sResults].[ShowResults] where trainerid=3631)
+
   --delete [HorseShows].[sResults].[Competitors]
