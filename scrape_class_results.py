@@ -14,13 +14,108 @@ from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
 import time
 import pyodbc
-def retry_on_stale_element(operation_func, max_retries=3, delay=0.5, *args, **kwargs):
+from datetime import datetime
+
+def print_with_timestamp(message, end='\n'):
+    """Print message with timestamp prefix"""
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    print(f"[{timestamp}] {message}", end=end)
+def reconnect_browser_and_navigate(driver, show_guid, year, show_name, current_url_hint=None):
+    """Reconnect browser and navigate back to ClassResults page
+    
+    Args:
+        driver: Current WebDriver instance (will be quit and replaced)
+        show_guid: ShowGUID to navigate to
+        year: Year for navigation context
+        show_name: Show name for navigation context
+        current_url_hint: Optional hint about what URL we were on
+    
+    Returns:
+        New WebDriver instance, or None if reconnection failed
+    """
+    try:
+        print(f"      [RECONNECT] Disconnecting browser due to stale element errors...")
+        
+        # Close current browser
+        try:
+            driver.quit()
+        except:
+            pass
+        
+        # Wait a moment
+        time.sleep(2)
+        
+        # Create new browser instance
+        print(f"      [RECONNECT] Creating new browser connection...")
+        new_driver = setup_driver(headless=True)
+        
+        # Navigate back to ClassResults page using the same flow as find_and_click_show_row
+        print(f"      [RECONNECT] Navigating to ClassResults page...")
+        show_selector_url = 'https://horseshowsonline.com/ShowSelector.aspx'
+        new_driver.get(show_selector_url)
+        time.sleep(3)
+        
+        # Activate Shows By Year tab
+        if not activate_shows_by_year_tab(new_driver):
+            print(f"      [RECONNECT] Warning: Failed to activate 'Shows By Year' tab, trying direct navigation")
+            class_results_url = f'https://horseshowsonline.com/ClassResults?ShowGUID={show_guid}'
+            new_driver.get(class_results_url)
+            time.sleep(5)
+        else:
+            # Select the year
+            if not select_year(new_driver, year):
+                print(f"      [RECONNECT] Warning: Failed to select year {year}, trying direct navigation")
+                class_results_url = f'https://horseshowsonline.com/ClassResults?ShowGUID={show_guid}'
+                new_driver.get(class_results_url)
+                time.sleep(5)
+            else:
+                # Find and click the show row to navigate to ClassResults (same as normal flow)
+                if not find_and_click_show_row(new_driver, show_guid, year, show_name):
+                    print(f"      [RECONNECT] Warning: Failed to find show row, trying direct navigation")
+                    class_results_url = f'https://horseshowsonline.com/ClassResults?ShowGUID={show_guid}'
+                    new_driver.get(class_results_url)
+                    time.sleep(5)
+        
+        # Wait for grid to load with longer timeout
+        try:
+            WebDriverWait(new_driver, 15).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']"))
+            )
+            print(f"      [RECONNECT] Grid table found")
+        except TimeoutException:
+            print(f"      [RECONNECT] Warning: Grid table not found after 15 seconds, but continuing...")
+            # Try one more time with a direct navigation
+            try:
+                class_results_url = f'https://horseshowsonline.com/ClassResults?ShowGUID={show_guid}'
+                new_driver.get(class_results_url)
+                time.sleep(5)
+                WebDriverWait(new_driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']"))
+                )
+                print(f"      [RECONNECT] Grid table found after direct navigation")
+            except:
+                print(f"      [RECONNECT] Warning: Grid table still not found after direct navigation")
+        
+        time.sleep(2)  # Additional wait for JavaScript
+        
+        print(f"      [RECONNECT] Browser reconnected successfully")
+        return new_driver
+        
+    except Exception as e:
+        print(f"      [RECONNECT] Error reconnecting browser: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def retry_on_stale_element(operation_func, max_retries=3, delay=0.5, reconnect_func=None, *args, **kwargs):
     """Helper function to retry an operation on StaleElementReferenceException
     
     Args:
         operation_func: Function to execute that may throw StaleElementReferenceException
         max_retries: Maximum number of retry attempts (default: 3)
         delay: Delay between retries in seconds (default: 0.5)
+        reconnect_func: Optional function to reconnect browser. If provided and stale element persists,
+                       will call this function before final retry attempts. Function should return new driver or None.
         *args, **kwargs: Arguments to pass to operation_func
     
     Returns:
@@ -33,8 +128,20 @@ def retry_on_stale_element(operation_func, max_retries=3, delay=0.5, *args, **kw
         except StaleElementReferenceException as e:
             last_exception = e
             if attempt < max_retries - 1:
-                time.sleep(delay)
-                continue
+                # If we're more than halfway through retries and have reconnect_func, try reconnecting
+                if reconnect_func and attempt >= (max_retries // 2) and attempt < max_retries - 1:
+                    print(f"      [RETRY] Stale element on attempt {attempt + 1}/{max_retries}, attempting browser reconnection...")
+                    new_driver = reconnect_func()
+                    if new_driver:
+                        # Update driver in kwargs if present
+                        if 'driver' in kwargs:
+                            kwargs['driver'] = new_driver
+                        # Also check if operation_func's closure has driver
+                        time.sleep(delay * 2)  # Longer delay after reconnect
+                        continue
+                else:
+                    time.sleep(delay)
+                    continue
             else:
                 # Last attempt failed, return None or re-raise based on context
                 return None
@@ -83,11 +190,11 @@ def get_db_connection():
         try:
             conn_str = f'DRIVER={{{driver}}};SERVER=localhost\\SQLEXPRESS;DATABASE=HorseShows;Trusted_Connection=yes;'
             conn = pyodbc.connect(conn_str)
-            print(f"[OK] Connected to HorseShows database using driver: {driver}")
+            print_with_timestamp(f"[OK] Connected to HorseShows database using driver: {driver}")
             return conn
         except Exception as e:
             if driver == drivers[-1]:  # Last driver
-                print(f"[ERROR] Database connection failed with all drivers: {e}")
+                print_with_timestamp(f"[ERROR] Database connection failed with all drivers: {e}")
                 raise
             continue
 
@@ -769,9 +876,9 @@ def get_show_data_from_database(conn, skip_processed=True, start_from_show_guid=
         if start_from_show_guid:
             start_from_id = get_show_list_id_from_guid(conn, start_from_show_guid)
             if start_from_id:
-                print(f"[INFO] Starting from ShowGUID {start_from_show_guid} (ShowListID: {start_from_id})")
+                print_with_timestamp(f"[INFO] Starting from ShowGUID {start_from_show_guid} (ShowListID: {start_from_id})")
             else:
-                print(f"[WARNING] ShowGUID {start_from_show_guid} not found, ignoring --start-from parameter")
+                print_with_timestamp(f"[WARNING] ShowGUID {start_from_show_guid} not found, ignoring --start-from parameter")
         
         if skip_processed:
             # Get shows that don't have existing ShowClass or ShowResults data
@@ -812,7 +919,7 @@ def get_show_data_from_database(conn, skip_processed=True, start_from_show_guid=
                     )
                     ORDER BY sl.ID
                 """)
-            print("[OK] Filtering out shows with existing ShowClass or ShowResults data")
+            print_with_timestamp("[OK] Filtering out shows with existing ShowClass or ShowResults data")
         else:
             # Get all shows regardless of existing data
             if start_from_id:
@@ -837,10 +944,10 @@ def get_show_data_from_database(conn, skip_processed=True, start_from_show_guid=
         
         show_data = [(row[0], row[1], row[2], row[3]) for row in cursor.fetchall()]
         cursor.close()
-        print(f"[OK] Found {len(show_data)} shows with EndDate < today")
+        print_with_timestamp(f"[OK] Found {len(show_data)} shows with EndDate < today")
         return show_data
     except Exception as e:
-        print(f"[ERROR] Error getting show data from database: {e}")
+        print_with_timestamp(f"[ERROR] Error getting show data from database: {e}")
         import traceback
         traceback.print_exc()
         return []
@@ -862,9 +969,9 @@ def get_shows_with_missing_classes(conn, start_from_show_guid=None):
         if start_from_show_guid:
             start_from_id = get_show_list_id_from_guid(conn, start_from_show_guid)
             if start_from_id:
-                print(f"[INFO] Starting from ShowGUID {start_from_show_guid} (ShowListID: {start_from_id})")
+                print_with_timestamp(f"[INFO] Starting from ShowGUID {start_from_show_guid} (ShowListID: {start_from_id})")
             else:
-                print(f"[WARNING] ShowGUID {start_from_show_guid} not found, ignoring --start-from parameter")
+                print_with_timestamp(f"[WARNING] ShowGUID {start_from_show_guid} not found, ignoring --start-from parameter")
         
         # Find shows that have ShowClass rows with Placings > 0 that don't have ShowResults
         if start_from_id:
@@ -949,12 +1056,12 @@ def get_shows_with_missing_classes(conn, start_from_show_guid=None):
                 result.append((show_list_id, show_guid, year, show_name, missing_class_ids))
         
         cursor.close()
-        print(f"[OK] Found {len(result)} shows with missing class results")
+        print_with_timestamp(f"[OK] Found {len(result)} shows with missing class results")
         total_missing = sum(len(ids) for _, _, _, _, ids in result)
-        print(f"[OK] Total missing classes to process: {total_missing}")
+        print_with_timestamp(f"[OK] Total missing classes to process: {total_missing}")
         return result
     except Exception as e:
-        print(f"[ERROR] Error getting shows with missing classes: {e}")
+        print_with_timestamp(f"[ERROR] Error getting shows with missing classes: {e}")
         import traceback
         traceback.print_exc()
         return []
@@ -1154,12 +1261,13 @@ def get_column_indices_for_entry_grid(detail_grid):
     
     return column_map
 
-def expand_row(driver, row_id):
+def expand_row(driver, row_id, reconnect_func=None):
     """Expand a row by clicking the expand button/icon using row ID
     
     Args:
         driver: WebDriver instance
         row_id: Row ID string to find the row element
+        reconnect_func: Optional function to reconnect browser on stale element
     """
     try:
         if not row_id:
@@ -1169,7 +1277,7 @@ def expand_row(driver, row_id):
         def find_row():
             return driver.find_element(By.ID, row_id)
         
-        row_element = retry_on_stale_element(find_row, max_retries=3, delay=0.3)
+        row_element = retry_on_stale_element(find_row, max_retries=3, delay=0.3, reconnect_func=reconnect_func)
         if not row_element:
             return False
         
@@ -1243,21 +1351,24 @@ def expand_row(driver, row_id):
         print(f"        [DEBUG] expand_row error: {e}")
         return False
 
-def collapse_row(driver, row_id):
+def collapse_row(driver, row_id, reconnect_func=None):
     """Collapse a row by clicking the collapse button/icon using row ID
     
     Args:
         driver: WebDriver instance
         row_id: Row ID string to find the row element
+        reconnect_func: Optional function to reconnect browser on stale element
     """
     try:
         if not row_id:
             return False
         
-        # Re-find the row element by ID (always fresh)
-        try:
-            row_element = driver.find_element(By.ID, row_id)
-        except:
+        # Re-find the row element by ID with retry and reconnection support
+        def find_row():
+            return driver.find_element(By.ID, row_id)
+        
+        row_element = retry_on_stale_element(find_row, max_retries=3, delay=0.3, reconnect_func=reconnect_func)
+        if not row_element:
             return False
         
         # Try to find collapse button in first cell
@@ -1285,8 +1396,14 @@ def collapse_row(driver, row_id):
     except:
         return False
 
-def extract_entry_details_from_row(row_element, entry_column_map):
-    """Extract entry detail data from a row"""
+def extract_entry_details_from_row(row_element, entry_column_map, reconnect_func=None):
+    """Extract entry detail data from a row
+    
+    Args:
+        row_element: Row element to extract from
+        entry_column_map: Column mapping dictionary
+        reconnect_func: Optional function to reconnect browser on stale element
+    """
     def extract_cells():
         cells = row_element.find_elements(By.TAG_NAME, "td")
         if len(cells) < 3:
@@ -1302,7 +1419,7 @@ def extract_entry_details_from_row(row_element, entry_column_map):
         return entry_data
     
     try:
-        result = retry_on_stale_element(extract_cells, max_retries=3, delay=0.3)
+        result = retry_on_stale_element(extract_cells, max_retries=3, delay=0.3, reconnect_func=reconnect_func)
         return result
     except Exception as e:
         print(f"      [WARNING] Error extracting entry details: {e}")
@@ -1419,13 +1536,23 @@ def get_or_create_horse(conn, horse_name, owner_id=None):
     finally:
         cursor.close()
 
-def save_show_result_to_database(conn, show_class_id, entry_details):
-    """Save entry detail result to ShowResults table (with duplicate check)"""
+def save_show_result_to_database(conn, show_class_id, entry_details, cursor=None, commit=True):
+    """Save entry detail result to ShowResults table (with duplicate check)
+    
+    Args:
+        conn: Database connection
+        show_class_id: ShowClass ID
+        entry_details: Dictionary with entry details
+        cursor: Optional cursor to reuse (for batch operations). If None, creates new cursor.
+        commit: Whether to commit after insert (default: True). Set False for batch operations.
+    """
     if not entry_details:
         return False
-    
-    cursor = conn.cursor()
-    
+
+    use_external_cursor = cursor is not None
+    if not use_external_cursor:
+        cursor = conn.cursor()
+
     try:
         # Check for duplicate entry in this class
         entry_number = entry_details.get('Entry', '').strip() if entry_details.get('Entry') else None
@@ -1436,7 +1563,7 @@ def save_show_result_to_database(conn, show_class_id, entry_details):
                 place = int(place_str)
         except:
             pass
-        
+
         # Check if this entry already exists for this class
         if entry_number:
             cursor.execute("""
@@ -1453,42 +1580,42 @@ def save_show_result_to_database(conn, show_class_id, entry_details):
         else:
             # Can't check for duplicates without entry number or place
             pass
-        
+
         if entry_number or place is not None:
             duplicate_count = cursor.fetchone()[0]
             if duplicate_count > 0:
                 return False  # Duplicate entry, don't save
-        
+
     except Exception as e:
         # If duplicate check fails, continue anyway
         pass
-    
+
     try:
         # Get or create competitor IDs for Rider and Trainer
         rider_id = None
         trainer_id = None
-        
+
         rider = entry_details.get('Rider', '').strip() if entry_details.get('Rider') else None
         trainer = entry_details.get('Trainer', '').strip() if entry_details.get('Trainer') else None
-        
+
         if rider:
             rider_id = get_or_create_competitor_by_role(conn, rider, 'Rider')
         if trainer:
             trainer_id = get_or_create_competitor_by_role(conn, trainer, 'Trainer')
-        
+
         # Get or create owner ID (for horse)
         owner_id = None
         owner = entry_details.get('Owner', '').strip() if entry_details.get('Owner') else None
         if owner:
             owner_id = get_or_create_competitor_by_role(conn, owner, 'Owner')
-        
+
         # Get or create horse ID (with owner)
         horse_id = None
         horse_name = entry_details.get('Horse', '').strip() if entry_details.get('Horse') else None
         if horse_name:
             horse_id = get_or_create_horse(conn, horse_name, owner_id)
-        
-        # Parse numeric values
+
+        # Parse numeric values (re-parse since we need it for insert)
         place = None
         try:
             place_str = entry_details.get('Place', '').strip()
@@ -1496,7 +1623,7 @@ def save_show_result_to_database(conn, show_class_id, entry_details):
                 place = int(place_str)
         except:
             pass
-        
+
         # Insert into ShowResults
         cursor.execute("""
             INSERT INTO sResults.ShowResults 
@@ -1519,15 +1646,18 @@ def save_show_result_to_database(conn, show_class_id, entry_details):
             rider_id,
             trainer_id
         )
-        
-        conn.commit()
+
+        if commit:
+            conn.commit()
         return True
     except Exception as e:
         print(f"      [WARNING] Error saving ShowResult to database: {e}")
-        conn.rollback()
+        if commit:
+            conn.rollback()
         return False
     finally:
-        cursor.close()
+        if not use_external_cursor:
+            cursor.close()
 
 def find_and_click_show_row(driver, show_guid, year, show_name):
     """Find and click the show row in the ShowSelector grid to navigate to ClassResults"""
@@ -1680,11 +1810,11 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
         conn: Database connection
         show_class_ids: Optional list of ShowClass IDs to process. If None, processes all classes.
     """
-    print(f"\n{'='*60}")
-    print(f"Scraping class results for ShowGUID: {show_guid} (Year: {year})")
+    print_with_timestamp(f"\n{'='*60}")
+    print_with_timestamp(f"Scraping class results for ShowGUID: {show_guid} (Year: {year})")
     if show_class_ids:
-        print(f"  Processing {len(show_class_ids)} specific classes only")
-    print(f"{'='*60}")
+        print_with_timestamp(f"  Processing {len(show_class_ids)} specific classes only")
+    print_with_timestamp(f"{'='*60}")
     
     results_count = 0
     
@@ -1798,7 +1928,7 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
         
         if not grid:
             print(f"  [WARNING] Could not find results grid for ShowGUID: {show_guid}")
-            return 0
+            return 0, driver
         
         # Get column mapping for class summary
         class_column_map = get_column_indices_for_class_grid(grid)
@@ -1861,8 +1991,8 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
         
         # If show_class_ids is provided, skip PASS 1 and query database for class info
         if show_class_ids:
-            print(f"\n  Skipping PASS 1 (class summaries already in database)")
-            print(f"  Building lookup map from grid rows...")
+            print_with_timestamp(f"\n  Skipping PASS 1 (class summaries already in database)")
+            print_with_timestamp(f"  Building lookup map from grid rows...")
             
             # Build a lookup map: (Class, ClassName) -> row_index (case-insensitive keys)
             grid_lookup = {}  # Key: (class.lower(), class_name.lower()), Value: row_index (1-based)
@@ -1899,8 +2029,8 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                 except:
                     continue
             
-            print(f"  Built lookup map with {len(grid_lookup)} entries")
-            print(f"  Loading class information from database for {len(show_class_ids)} classes...")
+            print_with_timestamp(f"  Built lookup map with {len(grid_lookup)} entries")
+            print_with_timestamp(f"  Loading class information from database for {len(show_class_ids)} classes...")
             
             # Query database to get Class and ClassName for each ShowClass ID
             class_data_list = []  # Store (row_index, show_class_id, entries) for second pass
@@ -1933,7 +2063,7 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
             finally:
                 cursor.close()
             
-            print(f"  [OK] Found {len(class_data_list)} matching classes in grid")
+            print_with_timestamp(f"  [OK] Found {len(class_data_list)} matching classes in grid")
         else:
             # Debug: if no rows found, try to understand the structure
             if len(class_rows) == 0:
@@ -1951,12 +2081,12 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                         print(f"    Row {i+1}: id='{row_id[:60]}', class='{row_class[:60]}', cells={len(cells)}, first_cell='{cell_text}'")
             
             # PASS 1: Extract all class summary data and save to ShowClass table
-            print(f"\n  PASS 1: Extracting class summaries...")
+            print_with_timestamp(f"\n  PASS 1: Extracting class summaries...")
             class_data_list = []  # Store (row_index, show_class_id, entries) for second pass
             
             for row_idx, class_row in enumerate(class_rows, 1):
                 try:
-                    print(f"  Extracting class row {row_idx}/{len(class_rows)}...")
+                    print_with_timestamp(f"  Extracting class row {row_idx}/{len(class_rows)}...")
 
                     # Re-find row to avoid stale element
                     try:
@@ -1981,21 +2111,23 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                     def get_cells_and_extract():
                         cells = class_row.find_elements(By.TAG_NAME, "td")
                         if len(cells) < 3:
-                            return None
+                            return None, None
                         class_summary = {}
                         for field, idx in class_column_map.items():
                             if idx is not None and len(cells) > idx:
                                 class_summary[field] = cells[idx].text.strip()
                             else:
                                 class_summary[field] = ''
-                        return class_summary
+                        return class_summary, cells
                     
-                    class_summary = retry_on_stale_element(get_cells_and_extract, max_retries=3, delay=0.3)
-                    if not class_summary:
+                    result = retry_on_stale_element(get_cells_and_extract, max_retries=3, delay=0.3)
+                    if not result or result[0] is None:
                         continue
+                    
+                    class_summary, cells = result
 
                     # Debug: Print first few cells to understand structure
-                    if row_idx == 1:
+                    if row_idx == 1 and cells:
                         print(f"    [DEBUG] First row cell contents:")
                         for i, cell in enumerate(cells[:8]):
                             print(f"      Cell {i}: '{cell.text.strip()[:50]}'")
@@ -2068,7 +2200,14 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
             print(f"  [OK] PASS 1 complete: {len(class_data_list)} classes with entries to process")
 
         # PASS 2: Expand each class row and capture entry details
-        print(f"\n  PASS 2: Extracting entry details...")
+        print_with_timestamp(f"\n  PASS 2: Extracting entry details...")
+        
+        # Create reconnect function for this show context (closure that captures show context)
+        # Note: driver is accessed from outer scope when called, not captured at definition time
+        def create_reconnect_func():
+            nonlocal driver  # Allow access to outer scope driver variable
+            return reconnect_browser_and_navigate(driver, show_guid, year, show_name)
+        
         for pass2_idx, (row_idx, show_class_id, entries) in enumerate(class_data_list, 1):
             try:
                 print(f"  Processing entry details {pass2_idx}/{len(class_data_list)} (row {row_idx})...")
@@ -2141,6 +2280,11 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                             # Try to find by index first, then by ID
                             if row_idx <= len(rows_refresh):
                                 class_row = rows_refresh[row_idx - 1]
+                                # Update class_row_id after finding row by index
+                                try:
+                                    class_row_id = class_row.get_attribute('id') or ''
+                                except:
+                                    pass
                             elif class_row_id:
                                 # Try to find by ID
                                 for r in rows_refresh:
@@ -2154,7 +2298,26 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                             print(f"        [DEBUG] Error re-finding row before expand: {e}")
                             # Try to continue with original row, expand_row will handle stale elements
                         
-                        row_expanded = expand_row(driver, class_row_id) if class_row_id else False
+                        # Check if we have a valid row ID before attempting expansion
+                        if not class_row_id:
+                            print(f"      [ERROR] Could not get row ID for row {row_idx} after refresh, attempting to get from current row element...")
+                            # Last attempt: try to get ID from current class_row element
+                            try:
+                                if 'class_row' in locals() and class_row:
+                                    class_row_id = class_row.get_attribute('id') or ''
+                                    if class_row_id:
+                                        print(f"      [OK] Retrieved row ID: {class_row_id}")
+                                    else:
+                                        print(f"      [ERROR] Row element exists but has no ID, skipping row {row_idx}")
+                                        continue
+                                else:
+                                    print(f"      [ERROR] Row element not available, skipping row {row_idx}")
+                                    continue
+                            except Exception as e2:
+                                print(f"      [ERROR] Exception getting row ID: {e2}, skipping row {row_idx}")
+                                continue
+                        
+                        row_expanded = expand_row(driver, class_row_id, reconnect_func=create_reconnect_func)
                         if row_expanded:
                             # Use WebDriverWait instead of fixed sleep for better performance
                             try:
@@ -2186,73 +2349,211 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                             # DevExpress often uses a pattern like: DataRow -> DetailRow
                             detail_rows = []
                             
-                            # Try multiple strategies to find detail rows (with retry on stale element)
+                            # Try multiple strategies to find detail rows (with retry on stale element and reconnection)
                             max_strategy_retries = 3
                             strategy_retry_delay = 0.5
                             strategy_success = False
+                            driver_reconnected = False
                             
                             for strategy_attempt in range(max_strategy_retries):
                                 if strategy_success:
                                     break
                                 
                                 try:
+                                    # On second retry or later, try reconnecting browser if stale elements persist
+                                    if strategy_attempt > 0 and not driver_reconnected:
+                                        print(f"      [RETRY] Attempting browser reconnection before retry {strategy_attempt + 1}/{max_strategy_retries}...")
+                                        new_driver = reconnect_browser_and_navigate(driver, show_guid, year, show_name)
+                                        if new_driver:
+                                            driver = new_driver
+                                            driver_reconnected = True
+                                            # Re-find grid and rows after reconnection
+                                            grid = driver.find_element(By.CSS_SELECTOR,
+                                                "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+                                            rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
+                                            if not rows:
+                                                all_rows = grid.find_elements(By.TAG_NAME, "tr")
+                                                rows = []
+                                                for r in all_rows:
+                                                    row_id = r.get_attribute('id') or ''
+                                                    row_class = r.get_attribute('class') or ''
+                                                    if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
+                                                        rows.append(r)
+                                            
+                                            if row_idx <= len(rows):
+                                                class_row = rows[row_idx - 1]
+                                                class_row_id = class_row.get_attribute('id') or ''
+                                                # Re-expand the row after reconnection
+                                                print(f"      [RECONNECT] Re-expanding row after browser reconnection...")
+                                                expand_row(driver, class_row_id, reconnect_func=create_reconnect_func)
+                                                time.sleep(2)
+                                    
                                     # Strategy 1: Look for grPlacing grids (nested result grids) following the class row
-                                    class_row_id = class_row.get_attribute('id')
-                                    if class_row_id:
-                                        # Get the grid table
+                                    # Always re-find grid and class_row to avoid stale elements - rebuild all references from scratch
+                                    try:
                                         grid = driver.find_element(By.CSS_SELECTOR,
                                             "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
                                         all_trs = grid.find_elements(By.TAG_NAME, "tr")
-                                    
-                                    # Find the class row index
-                                    class_row_idx = -1
-                                    for i, tr in enumerate(all_trs):
-                                        if tr.get_attribute('id') == class_row_id:
-                                            class_row_idx = i
-                                            break
-                                    
-                                    if class_row_idx >= 0:
-                                        # Look for the next tr(s) that contain grPlacing grids
-                                        for i in range(class_row_idx + 1, len(all_trs)):
-                                            next_tr = all_trs[i]
-                                            next_tr_id = next_tr.get_attribute('id') or ''
-                                            next_tr_class = next_tr.get_attribute('class') or ''
-                                            
-                                            # If this is another class row (has DataRow but not in detail container), stop
-                                            if 'DataRow' in next_tr_id and 'dxdt' not in next_tr_id and 'dxgvDetailRow' not in next_tr_class:
-                                                # Verify it's actually a class row by checking cell structure
-                                                cells = next_tr.find_elements(By.TAG_NAME, "td")
-                                                if len(cells) >= 2:
-                                                    # Class rows typically have a class number in early cells
-                                                    break
-                                            
-                                            # Look for grPlacing grids (nested result grids) in this row
-                                            placing_grids = next_tr.find_elements(By.CSS_SELECTOR, "table[id*='grPlacing']")
-                                            for placing_grid in placing_grids:
-                                                # Store reference to the grid for column mapping
-                                                placing_grid_table = placing_grid
-                                                # Find data rows in the placing grid
-                                                placing_rows = placing_grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow'], tr.dxgvDataRow")
-                                                for pr in placing_rows:
-                                                    pr_id = pr.get_attribute('id') or ''
-                                                    pr_cells = pr.find_elements(By.TAG_NAME, "td")
-                                                    # Result rows have many columns (Place, Entry, Horse, Rider, Owner, Trainer, etc.)
-                                                    if len(pr_cells) >= 10 and 'HeaderRow' not in pr_id and 'FilterRow' not in pr_id:
-                                                        # Store tuple of (row, grid_table) for column mapping
-                                                        detail_rows.append((pr, placing_grid_table))
                                         
-                                        if detail_rows:
-                                            print(f"      Strategy 1 found {len(detail_rows)} detail rows in grPlacing grids")
-                                            strategy_success = True
-                                            break
+                                        # Re-find class_row by row_idx to get fresh reference
+                                        rows_refresh = []
+                                        for r in all_trs:
+                                            try:
+                                                row_id_refresh = r.get_attribute('id') or ''
+                                                row_class_refresh = r.get_attribute('class') or ''
+                                                if ('DataRow' in row_id_refresh or 'dxgvDataRow' in row_class_refresh) and 'HeaderRow' not in row_id_refresh and 'FilterRow' not in row_id_refresh:
+                                                    rows_refresh.append(r)
+                                            except StaleElementReferenceException:
+                                                continue
+                                        
+                                        if row_idx <= len(rows_refresh):
+                                            class_row_refresh = rows_refresh[row_idx - 1]
+                                            current_class_row_id = class_row_refresh.get_attribute('id') or ''
+                                            # Update class_row reference for consistency
+                                            class_row = class_row_refresh
+                                        else:
+                                            print(f"      Strategy 1: Row index {row_idx} out of range (found {len(rows_refresh)} rows)")
+                                            current_class_row_id = None
+                                    except Exception as e:
+                                        print(f"      Strategy 1 error re-finding elements: {e}")
+                                        current_class_row_id = None
+                                    
+                                    if not current_class_row_id:
+                                        print(f"      Strategy 1: Could not find class row, skipping this attempt...")
+                                        # Don't continue - let it fall through to Strategy 2
+                                        pass
+                                    else:
+                                    
+                                        # Find the class row index in all_trs
+                                        class_row_idx = -1
+                                        for i, tr in enumerate(all_trs):
+                                            try:
+                                                tr_id = tr.get_attribute('id') or ''
+                                                if tr_id == current_class_row_id:
+                                                    class_row_idx = i
+                                                    break
+                                            except StaleElementReferenceException:
+                                                continue
+                                            except Exception:
+                                                continue
+                                        
+                                        if class_row_idx >= 0:
+                                            # Look for the next tr(s) that contain grPlacing grids
+                                            for i in range(class_row_idx + 1, len(all_trs)):
+                                                try:
+                                                    next_tr = all_trs[i]
+                                                    next_tr_id = next_tr.get_attribute('id') or ''
+                                                    next_tr_class = next_tr.get_attribute('class') or ''
+                                                    
+                                                    # If this is another class row (has DataRow but not in detail container), stop
+                                                    if 'DataRow' in next_tr_id and 'dxdt' not in next_tr_id and 'dxgvDetailRow' not in next_tr_class:
+                                                        # Verify it's actually a class row by checking cell structure
+                                                        cells = next_tr.find_elements(By.TAG_NAME, "td")
+                                                        if len(cells) >= 2:
+                                                            # Class rows typically have a class number in early cells
+                                                            break
+                                                    
+                                                    # Look for grPlacing grids (nested result grids) in this row
+                                                    placing_grids = next_tr.find_elements(By.CSS_SELECTOR, "table[id*='grPlacing']")
+                                                    for placing_grid in placing_grids:
+                                                        # Store reference to the grid for column mapping
+                                                        placing_grid_table = placing_grid
+                                                        # Find data rows in the placing grid
+                                                        placing_rows = placing_grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow'], tr.dxgvDataRow")
+                                                        for pr in placing_rows:
+                                                            pr_id = pr.get_attribute('id') or ''
+                                                            pr_cells = pr.find_elements(By.TAG_NAME, "td")
+                                                            # Result rows have many columns (Place, Entry, Horse, Rider, Owner, Trainer, etc.)
+                                                            if len(pr_cells) >= 10 and 'HeaderRow' not in pr_id and 'FilterRow' not in pr_id:
+                                                                # Store tuple of (row, grid_table) for column mapping
+                                                                detail_rows.append((pr, placing_grid_table))
+                                                except StaleElementReferenceException:
+                                                    # Skip this row if it becomes stale
+                                                    continue
+                                                except Exception:
+                                                    # Skip this row on other errors
+                                                    continue
+                                            
+                                            if detail_rows:
+                                                print(f"      Strategy 1 found {len(detail_rows)} detail rows in grPlacing grids")
+                                                strategy_success = True
+                                                break
                                 except StaleElementReferenceException as e:
                                     if strategy_attempt < max_strategy_retries - 1:
-                                        print(f"      Strategy 1 stale element (attempt {strategy_attempt + 1}/{max_strategy_retries}), retrying all strategies...")
-                                        time.sleep(strategy_retry_delay)
-                                        detail_rows = []  # Reset for retry
-                                        raise  # Re-raise to trigger outer retry loop
+                                        print(f"      Strategy 1 stale element (attempt {strategy_attempt + 1}/{max_strategy_retries}), attempting browser reconnection...")
+                                        
+                                        # Immediately attempt browser reconnection on stale element
+                                        if not driver_reconnected:
+                                            try:
+                                                new_driver = reconnect_browser_and_navigate(driver, show_guid, year, show_name)
+                                                if new_driver:
+                                                    driver = new_driver
+                                                    driver_reconnected = True
+                                                    
+                                                    # Re-find ALL elements from scratch after reconnection
+                                                    print(f"      [RECONNECT] Re-establishing context after browser reconnection...")
+                                                    grid = driver.find_element(By.CSS_SELECTOR,
+                                                        "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+                                                    all_rows_reconnect = grid.find_elements(By.TAG_NAME, "tr")
+                                                    rows_reconnect = []
+                                                    for r in all_rows_reconnect:
+                                                        row_id_reconnect = r.get_attribute('id') or ''
+                                                        row_class_reconnect = r.get_attribute('class') or ''
+                                                        if ('DataRow' in row_id_reconnect or 'dxgvDataRow' in row_class_reconnect) and 'HeaderRow' not in row_id_reconnect and 'FilterRow' not in row_id_reconnect:
+                                                            rows_reconnect.append(r)
+                                                    
+                                                    if row_idx <= len(rows_reconnect):
+                                                        class_row = rows_reconnect[row_idx - 1]  # Fresh reference
+                                                        class_row_id = class_row.get_attribute('id') or ''
+                                                        # Re-expand the row after reconnection
+                                                        print(f"      [RECONNECT] Re-expanding row {row_idx} after browser reconnection...")
+                                                        expand_row(driver, class_row_id, reconnect_func=create_reconnect_func)
+                                                        time.sleep(3)  # Longer wait after reconnection
+                                                        print(f"      Retrying Strategy 1 after reconnection...")
+                                                        detail_rows = []  # Reset for retry
+                                                        continue  # Continue to next iteration with fresh elements
+                                                    else:
+                                                        print(f"      [ERROR] Row {row_idx} no longer available after reconnection")
+                                                        break
+                                                else:
+                                                    print(f"      [WARNING] Browser reconnection failed, retrying without reconnection...")
+                                                    time.sleep(strategy_retry_delay)
+                                                    detail_rows = []  # Reset for retry
+                                                    continue
+                                            except Exception as reconnect_error:
+                                                print(f"      [WARNING] Error during browser reconnection: {reconnect_error}")
+                                                time.sleep(strategy_retry_delay)
+                                                detail_rows = []  # Reset for retry
+                                                continue
+                                        else:
+                                            # Already reconnected, but still getting stale elements - try to refresh elements one more time
+                                            print(f"      Browser already reconnected, refreshing element references...")
+                                            try:
+                                                grid = driver.find_element(By.CSS_SELECTOR,
+                                                    "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+                                                all_rows_refresh = grid.find_elements(By.TAG_NAME, "tr")
+                                                rows_refresh = []
+                                                for r in all_rows_refresh:
+                                                    row_id_refresh = r.get_attribute('id') or ''
+                                                    row_class_refresh = r.get_attribute('class') or ''
+                                                    if ('DataRow' in row_id_refresh or 'dxgvDataRow' in row_class_refresh) and 'HeaderRow' not in row_id_refresh and 'FilterRow' not in row_id_refresh:
+                                                        rows_refresh.append(r)
+                                                
+                                                if row_idx <= len(rows_refresh):
+                                                    class_row = rows_refresh[row_idx - 1]  # Fresh reference
+                                                    class_row_id = class_row.get_attribute('id') or ''
+                                                    # Re-expand to ensure row is expanded
+                                                    expand_row(driver, class_row_id, reconnect_func=create_reconnect_func)
+                                                    time.sleep(2)
+                                            except Exception as refresh_error:
+                                                print(f"      [WARNING] Error refreshing elements: {refresh_error}")
+                                            
+                                            time.sleep(strategy_retry_delay)
+                                            detail_rows = []  # Reset for retry
+                                            continue  # Continue to next iteration
                                     else:
                                         print(f"      Strategy 1 error (final attempt): {e}")
+                                        break  # Break out of loop on final attempt
                                 except Exception as e:
                                     print(f"      Strategy 1 error: {e}")
                                 
@@ -2313,12 +2614,54 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                                                     break
                                         except StaleElementReferenceException as e:
                                             if strategy_attempt < max_strategy_retries - 1:
-                                                print(f"      Strategy 2 stale element (attempt {strategy_attempt + 1}/{max_strategy_retries}), retrying all strategies...")
-                                                time.sleep(strategy_retry_delay)
+                                                print(f"      Strategy 2 stale element (attempt {strategy_attempt + 1}/{max_strategy_retries}), attempting browser reconnection...")
+                                                
+                                                # Immediately attempt browser reconnection on stale element
+                                                if not driver_reconnected:
+                                                    try:
+                                                        new_driver = reconnect_browser_and_navigate(driver, show_guid, year, show_name)
+                                                        if new_driver:
+                                                            driver = new_driver
+                                                            driver_reconnected = True
+                                                            # Re-find grid and rows after reconnection
+                                                            grid = driver.find_element(By.CSS_SELECTOR,
+                                                                "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+                                                            rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
+                                                            if not rows:
+                                                                all_rows = grid.find_elements(By.TAG_NAME, "tr")
+                                                                rows = []
+                                                                for r in all_rows:
+                                                                    row_id = r.get_attribute('id') or ''
+                                                                    row_class = r.get_attribute('class') or ''
+                                                                    if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
+                                                                        rows.append(r)
+                                                            
+                                                            if row_idx <= len(rows):
+                                                                class_row = rows[row_idx - 1]
+                                                                class_row_id = class_row.get_attribute('id') or ''
+                                                                # Re-expand the row after reconnection
+                                                                print(f"      [RECONNECT] Re-expanding row after browser reconnection...")
+                                                                expand_row(driver, class_row_id, reconnect_func=create_reconnect_func)
+                                                                time.sleep(2)
+                                                                print(f"      Retrying Strategy 2 after reconnection...")
+                                                            else:
+                                                                print(f"      [ERROR] Row {row_idx} no longer available after reconnection")
+                                                                break
+                                                        else:
+                                                            print(f"      [WARNING] Browser reconnection failed, retrying without reconnection...")
+                                                            time.sleep(strategy_retry_delay)
+                                                    except Exception as reconnect_error:
+                                                        print(f"      [WARNING] Error during browser reconnection: {reconnect_error}")
+                                                        time.sleep(strategy_retry_delay)
+                                                else:
+                                                    print(f"      Browser already reconnected, retrying...")
+                                                    time.sleep(strategy_retry_delay)
+                                                
                                                 detail_rows = []  # Reset for retry
-                                                raise  # Re-raise to trigger outer retry loop
+                                                continue  # Continue to next iteration instead of raising
                                             else:
                                                 print(f"      Strategy 2 error (final attempt): {e}")
+                                                break  # Break out of loop on final attempt
                                         except Exception as e:
                                             print(f"      Strategy 2 error: {e}")
                                 
@@ -2345,12 +2688,54 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                                                     break
                                         except StaleElementReferenceException as e:
                                             if strategy_attempt < max_strategy_retries - 1:
-                                                print(f"      Strategy 3 stale element (attempt {strategy_attempt + 1}/{max_strategy_retries}), retrying all strategies...")
-                                                time.sleep(strategy_retry_delay)
+                                                print(f"      Strategy 3 stale element (attempt {strategy_attempt + 1}/{max_strategy_retries}), attempting browser reconnection...")
+                                                
+                                                # Immediately attempt browser reconnection on stale element
+                                                if not driver_reconnected:
+                                                    try:
+                                                        new_driver = reconnect_browser_and_navigate(driver, show_guid, year, show_name)
+                                                        if new_driver:
+                                                            driver = new_driver
+                                                            driver_reconnected = True
+                                                            # Re-find grid and rows after reconnection
+                                                            grid = driver.find_element(By.CSS_SELECTOR,
+                                                                "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+                                                            rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
+                                                            if not rows:
+                                                                all_rows = grid.find_elements(By.TAG_NAME, "tr")
+                                                                rows = []
+                                                                for r in all_rows:
+                                                                    row_id = r.get_attribute('id') or ''
+                                                                    row_class = r.get_attribute('class') or ''
+                                                                    if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
+                                                                        rows.append(r)
+                                                            
+                                                            if row_idx <= len(rows):
+                                                                class_row = rows[row_idx - 1]
+                                                                class_row_id = class_row.get_attribute('id') or ''
+                                                                # Re-expand the row after reconnection
+                                                                print(f"      [RECONNECT] Re-expanding row after browser reconnection...")
+                                                                expand_row(driver, class_row_id, reconnect_func=create_reconnect_func)
+                                                                time.sleep(2)
+                                                                print(f"      Retrying Strategy 3 after reconnection...")
+                                                            else:
+                                                                print(f"      [ERROR] Row {row_idx} no longer available after reconnection")
+                                                                break
+                                                        else:
+                                                            print(f"      [WARNING] Browser reconnection failed, retrying without reconnection...")
+                                                            time.sleep(strategy_retry_delay)
+                                                    except Exception as reconnect_error:
+                                                        print(f"      [WARNING] Error during browser reconnection: {reconnect_error}")
+                                                        time.sleep(strategy_retry_delay)
+                                                else:
+                                                    print(f"      Browser already reconnected, retrying...")
+                                                    time.sleep(strategy_retry_delay)
+                                                
                                                 detail_rows = []  # Reset for retry
-                                                raise  # Re-raise to trigger outer retry loop
+                                                continue  # Continue to next iteration instead of raising
                                             else:
                                                 print(f"      Strategy 3 error (final attempt): {e}")
+                                                break  # Break out of loop on final attempt
                                         except Exception as e:
                                             print(f"      Strategy 3 error: {e}")
                                 
@@ -2392,23 +2777,108 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                                                     break
                                         except StaleElementReferenceException as e:
                                             if strategy_attempt < max_strategy_retries - 1:
-                                                print(f"      Strategy 4 stale element (attempt {strategy_attempt + 1}/{max_strategy_retries}), retrying all strategies...")
-                                                time.sleep(strategy_retry_delay)
+                                                print(f"      Strategy 4 stale element (attempt {strategy_attempt + 1}/{max_strategy_retries}), attempting browser reconnection...")
+                                                
+                                                # Immediately attempt browser reconnection on stale element
+                                                if not driver_reconnected:
+                                                    try:
+                                                        new_driver = reconnect_browser_and_navigate(driver, show_guid, year, show_name)
+                                                        if new_driver:
+                                                            driver = new_driver
+                                                            driver_reconnected = True
+                                                            # Re-find grid and rows after reconnection
+                                                            grid = driver.find_element(By.CSS_SELECTOR,
+                                                                "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+                                                            rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
+                                                            if not rows:
+                                                                all_rows = grid.find_elements(By.TAG_NAME, "tr")
+                                                                rows = []
+                                                                for r in all_rows:
+                                                                    row_id = r.get_attribute('id') or ''
+                                                                    row_class = r.get_attribute('class') or ''
+                                                                    if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
+                                                                        rows.append(r)
+                                                            
+                                                            if row_idx <= len(rows):
+                                                                class_row = rows[row_idx - 1]
+                                                                class_row_id = class_row.get_attribute('id') or ''
+                                                                # Re-expand the row after reconnection
+                                                                print(f"      [RECONNECT] Re-expanding row after browser reconnection...")
+                                                                expand_row(driver, class_row_id, reconnect_func=create_reconnect_func)
+                                                                time.sleep(2)
+                                                                print(f"      Retrying Strategy 4 after reconnection...")
+                                                            else:
+                                                                print(f"      [ERROR] Row {row_idx} no longer available after reconnection")
+                                                                break
+                                                        else:
+                                                            print(f"      [WARNING] Browser reconnection failed, retrying without reconnection...")
+                                                            time.sleep(strategy_retry_delay)
+                                                    except Exception as reconnect_error:
+                                                        print(f"      [WARNING] Error during browser reconnection: {reconnect_error}")
+                                                        time.sleep(strategy_retry_delay)
+                                                else:
+                                                    print(f"      Browser already reconnected, retrying...")
+                                                    time.sleep(strategy_retry_delay)
+                                                
                                                 detail_rows = []  # Reset for retry
-                                                raise  # Re-raise to trigger outer retry loop
+                                                continue  # Continue to next iteration instead of raising
                                             else:
                                                 print(f"      Strategy 4 error (final attempt): {e}")
+                                                break  # Break out of loop on final attempt
                                         except Exception as e:
                                             print(f"      Strategy 4 error: {e}")
                                 
                                 except StaleElementReferenceException as e:
                                     # Outer catch for any stale element in strategies 1-4
                                     if strategy_attempt < max_strategy_retries - 1:
-                                        print(f"      Stale element in strategies (attempt {strategy_attempt + 1}/{max_strategy_retries}), retrying all strategies...")
-                                        time.sleep(strategy_retry_delay)
+                                        print(f"      Stale element in strategies (attempt {strategy_attempt + 1}/{max_strategy_retries}), attempting browser reconnection...")
+                                        
+                                        # Immediately attempt browser reconnection on stale element
+                                        if not driver_reconnected:
+                                            try:
+                                                new_driver = reconnect_browser_and_navigate(driver, show_guid, year, show_name)
+                                                if new_driver:
+                                                    driver = new_driver
+                                                    driver_reconnected = True
+                                                    # Re-find grid and rows after reconnection
+                                                    grid = driver.find_element(By.CSS_SELECTOR,
+                                                        "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+                                                    rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
+                                                    if not rows:
+                                                        all_rows = grid.find_elements(By.TAG_NAME, "tr")
+                                                        rows = []
+                                                        for r in all_rows:
+                                                            row_id = r.get_attribute('id') or ''
+                                                            row_class = r.get_attribute('class') or ''
+                                                            if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
+                                                                rows.append(r)
+                                                    
+                                                    if row_idx <= len(rows):
+                                                        class_row = rows[row_idx - 1]
+                                                        class_row_id = class_row.get_attribute('id') or ''
+                                                        # Re-expand the row after reconnection
+                                                        print(f"      [RECONNECT] Re-expanding row after browser reconnection...")
+                                                        expand_row(driver, class_row_id, reconnect_func=create_reconnect_func)
+                                                        time.sleep(2)
+                                                        print(f"      Retrying strategies after reconnection...")
+                                                    else:
+                                                        print(f"      [ERROR] Row {row_idx} no longer available after reconnection")
+                                                        break
+                                                else:
+                                                    print(f"      [WARNING] Browser reconnection failed, retrying without reconnection...")
+                                                    time.sleep(strategy_retry_delay)
+                                            except Exception as reconnect_error:
+                                                print(f"      [WARNING] Error during browser reconnection: {reconnect_error}")
+                                                time.sleep(strategy_retry_delay)
+                                        else:
+                                            print(f"      Browser already reconnected, retrying...")
+                                            time.sleep(strategy_retry_delay)
+                                        
                                         detail_rows = []  # Reset for retry
+                                        continue  # Continue to next iteration
                                     else:
                                         print(f"      Strategies failed after {max_strategy_retries} attempts: {e}")
+                                        break  # Break out of loop on final attempt
                             
                             print(f"      Total found: {len(detail_rows)} entry detail rows")
                             
@@ -2438,7 +2908,8 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                                     print(f"      [WARNING] Cannot extract entry details without grid table")
                                     entry_column_map = {}
                                 
-                                # Process each entry detail row
+                                # Extract all entry details first (batch extraction for better performance)
+                                all_entry_details = []
                                 for detail_row_item in detail_rows:
                                     # Extract row element from tuple if it's a tuple
                                     if isinstance(detail_row_item, tuple):
@@ -2447,44 +2918,105 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                                         detail_row = detail_row_item
                                     
                                     if entry_column_map:
-                                        entry_details = extract_entry_details_from_row(detail_row, entry_column_map)
-                                        if entry_details:
-                                            if save_show_result_to_database(conn, show_class_id, entry_details):
+                                        # Direct extraction without retry overhead (rows should be fresh)
+                                        try:
+                                            cells = detail_row.find_elements(By.TAG_NAME, "td")
+                                            if len(cells) >= 3:
+                                                entry_data = {}
+                                                for field, idx in entry_column_map.items():
+                                                    if idx is not None and len(cells) > idx:
+                                                        entry_data[field] = cells[idx].text.strip()
+                                                    else:
+                                                        entry_data[field] = ''
+                                                if entry_data:
+                                                    all_entry_details.append(entry_data)
+                                        except StaleElementReferenceException:
+                                            # Fallback to retry function if stale (with reconnection support)
+                                            entry_details = extract_entry_details_from_row(detail_row, entry_column_map, reconnect_func=create_reconnect_func)
+                                            if entry_details:
+                                                all_entry_details.append(entry_details)
+                                        except Exception as e:
+                                            pass  # Skip this row
+                                
+                                # Batch save to database (use single transaction for better performance)
+                                if all_entry_details:
+                                    print_with_timestamp(f"      Extracted {len(all_entry_details)} entry details, saving to database...")
+                                    saved_entries = 0
+                                    cursor = conn.cursor()
+                                    try:
+                                        for entry_details in all_entry_details:
+                                            # Use batch mode (no commit per entry)
+                                            if save_show_result_to_database(conn, show_class_id, entry_details, cursor=cursor, commit=False):
+                                                saved_entries += 1
                                                 results_count += 1
-                                                place_val = entry_details.get('Place', '').strip()
-                                                horse_val = entry_details.get('Horse', '').strip()
-                                                rider_val = entry_details.get('Rider', '').strip()
-                                                owner_val = entry_details.get('Owner', '').strip()
-                                                trainer_val = entry_details.get('Trainer', '').strip()
-                                                print(f"        Saved entry: Place {place_val if place_val else 'N/A'}, Rider: {rider_val[:50] if rider_val else 'N/A'}, Horse: {horse_val[:50] if horse_val else 'N/A'}, Owner: {owner_val[:50] if owner_val else 'N/A'}, Trainer: {trainer_val[:50] if trainer_val else 'N/A'}")
-                                    else:
-                                        print(f"        [WARNING] Skipping row (no column mapping)")
+                                        # Commit all entries at once
+                                        conn.commit()
+                                        print_with_timestamp(f"      Saved {saved_entries}/{len(all_entry_details)} entries")
+                                    except Exception as e:
+                                        conn.rollback()
+                                        print(f"      [WARNING] Error in batch save, rolling back: {e}")
+                                    finally:
+                                        cursor.close()
+                                elif entry_column_map:
+                                    print(f"      [WARNING] No entry details extracted from {len(detail_rows)} rows")
                             else:
                                 print(f"      [WARNING] No entry detail rows found after expansion")
+                        else:
+                            # Expansion failed - report error and potentially retry
+                            print(f"      [ERROR] Failed to expand row {row_idx} (row_expanded=False)")
+                            print(f"      [ERROR] Row ID: {class_row_id}")
+                            # Don't skip the row - try to continue or log the failure
+                            # We could retry here or mark it for later processing
                             
-                            # Collapse row after capturing data
+                            # Collapse row after capturing data (even if expansion failed, ensure row state is correct)
                             try:
                                 # Re-find the row to avoid stale element
-                                grid = driver.find_element(By.CSS_SELECTOR, 
-                                    "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
-                                rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
-                                if not rows:
-                                    all_rows = grid.find_elements(By.TAG_NAME, "tr")
-                                    rows = []
-                                    for r in all_rows:
-                                        row_id = r.get_attribute('id') or ''
-                                        row_class = r.get_attribute('class') or ''
-                                        if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
-                                            rows.append(r)
+                                def refresh_for_collapse():
+                                    grid_collapse = driver.find_element(By.CSS_SELECTOR, 
+                                        "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+                                    rows_collapse = grid_collapse.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
+                                    if not rows_collapse:
+                                        all_rows_collapse = grid_collapse.find_elements(By.TAG_NAME, "tr")
+                                        rows_collapse = []
+                                        for r in all_rows_collapse:
+                                            row_id_c = r.get_attribute('id') or ''
+                                            row_class_c = r.get_attribute('class') or ''
+                                            if ('DataRow' in row_id_c or 'dxgvDataRow' in row_class_c) and 'HeaderRow' not in row_id_c and 'FilterRow' not in row_id_c:
+                                                rows_collapse.append(r)
+                                    
+                                    if row_idx <= len(rows_collapse):
+                                        row_to_collapse = rows_collapse[row_idx - 1]
+                                        collapse_row_id_c = row_to_collapse.get_attribute('id') or ''
+                                        if collapse_row_id_c:
+                                            collapse_row(driver, collapse_row_id_c, reconnect_func=create_reconnect_func)
+                                            return True
+                                    return False
                                 
-                                if row_idx <= len(rows):
-                                    row_to_collapse = rows[row_idx - 1]
-                                    try:
-                                        collapse_row_id = row_to_collapse.get_attribute('id') or ''
-                                        if collapse_row_id:
-                                            collapse_row(driver, collapse_row_id)
-                                    except:
-                                        pass
+                                # Try with retry and reconnection support
+                                try:
+                                    refresh_for_collapse()
+                                except StaleElementReferenceException:
+                                    # Try reconnecting and retrying
+                                    new_driver_collapse = reconnect_browser_and_navigate(driver, show_guid, year, show_name)
+                                    if new_driver_collapse:
+                                        driver = new_driver_collapse
+                                        # Re-expand first to get back to the same state
+                                        grid = driver.find_element(By.CSS_SELECTOR,
+                                            "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+                                        rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
+                                        if not rows:
+                                            all_rows = grid.find_elements(By.TAG_NAME, "tr")
+                                            rows = []
+                                            for r in all_rows:
+                                                row_id = r.get_attribute('id') or ''
+                                                row_class = r.get_attribute('class') or ''
+                                                if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
+                                                    rows.append(r)
+                                        if row_idx <= len(rows):
+                                            row_to_collapse = rows[row_idx - 1]
+                                            collapse_row_id = row_to_collapse.get_attribute('id') or ''
+                                            if collapse_row_id:
+                                                collapse_row(driver, collapse_row_id, reconnect_func=create_reconnect_func)
                             except Exception as e:
                                 print(f"      [WARNING] Could not collapse row: {e}")
                     except Exception as e:
@@ -2497,14 +3029,14 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                 print(f"  [WARNING] Error processing entry details for row {row_idx}: {e}")
                 continue
         
-        print(f"  [OK] Completed scraping for ShowGUID {show_guid}: {results_count} results saved")
-        return results_count
+        print_with_timestamp(f"  [OK] Completed scraping for ShowGUID {show_guid}: {results_count} results saved")
+        return results_count, driver  # Return driver in case it was reconnected
         
     except Exception as e:
-        print(f"  [ERROR] Error scraping class results for ShowGUID {show_guid}: {e}")
+        print_with_timestamp(f"  [ERROR] Error scraping class results for ShowGUID {show_guid}: {e}")
         import traceback
         traceback.print_exc()
-        return results_count
+        return results_count, driver  # Return driver in case it was reconnected
 
 def main(skip_processed=True, load_missing_classes=False, start_from_show_guid=None):
     """Main function to scrape class results
@@ -2514,96 +3046,96 @@ def main(skip_processed=True, load_missing_classes=False, start_from_show_guid=N
         load_missing_classes: If True, load only classes with Placings > 0 that don't have ShowResults (default: False)
         start_from_show_guid: Optional ShowGUID to start from (only processes ShowListID >= that ShowGUID's ID)
     """
-    print("\n" + "=" * 60)
-    print("HorseShowsOnline - Class Results Scraper")
-    print("=" * 60 + "\n")
+    print_with_timestamp("\n" + "=" * 60)
+    print_with_timestamp("HorseShowsOnline - Class Results Scraper")
+    print_with_timestamp("=" * 60 + "\n")
     
     if load_missing_classes:
-        print("[INFO] Will load only missing class results (classes with Placings > 0 that don't have ShowResults)\n")
+        print_with_timestamp("[INFO] Will load only missing class results (classes with Placings > 0 that don't have ShowResults)\n")
     elif skip_processed:
-        print("[INFO] Will skip shows with existing ShowClass or ShowResults data\n")
+        print_with_timestamp("[INFO] Will skip shows with existing ShowClass or ShowResults data\n")
     else:
-        print("[INFO] Will process all shows, including those with existing data\n")
+        print_with_timestamp("[INFO] Will process all shows, including those with existing data\n")
     
     driver = None
     conn = None
     
     try:
         # Setup driver
-        print("Initializing browser (headless mode)...")
+        print_with_timestamp("Initializing browser (headless mode)...")
         driver = setup_driver(headless=True)
-        print("  [OK] Browser initialized\n")
+        print_with_timestamp("  [OK] Browser initialized\n")
         
         # Connect to database
-        print("Connecting to database...")
+        print_with_timestamp("Connecting to database...")
         conn = get_db_connection()
-        print("[OK] Connected to database")
+        print_with_timestamp("[OK] Connected to database")
         
         # Create tables
-        print("\nEnsuring database tables exist...")
+        print_with_timestamp("\nEnsuring database tables exist...")
         create_competitors_table_if_not_exists(conn)
         create_horse_table_if_not_exists(conn)
         create_showclass_table_if_not_exists(conn)
         create_showresults_table_if_not_exists(conn)
-        print("[OK] Database tables verified/created\n")
+        print_with_timestamp("[OK] Database tables verified/created\n")
         
         # Get ShowGUIDs, Years, and ShowNames from database
         if load_missing_classes:
-            print("Fetching shows with missing class results...")
+            print_with_timestamp("Fetching shows with missing class results...")
             show_data_list = get_shows_with_missing_classes(conn, start_from_show_guid=start_from_show_guid)
-            print(f"[OK] Found {len(show_data_list)} shows with missing classes\n")
+            print_with_timestamp(f"[OK] Found {len(show_data_list)} shows with missing classes\n")
             
             if not show_data_list:
-                print("[WARNING] No shows with missing class results found.")
+                print_with_timestamp("[WARNING] No shows with missing class results found.")
                 return
             
             # Scrape results for each show (with specific class IDs)
             total_results = 0
             for idx, (show_list_id, show_guid, year, show_name, missing_class_ids) in enumerate(show_data_list, 1):
-                print(f"\nProcessing show {idx}/{len(show_data_list)} ({len(missing_class_ids)} missing classes)...")
-                results_count = scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_name, conn, show_class_ids=missing_class_ids)
+                print_with_timestamp(f"\nProcessing show {idx}/{len(show_data_list)} ({len(missing_class_ids)} missing classes)...")
+                results_count, driver = scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_name, conn, show_class_ids=missing_class_ids)
                 total_results += results_count
                 
                 # Small delay between shows
                 time.sleep(2)
         else:
-            print("Fetching ShowGUIDs, Years, and ShowNames from ShowList table...")
+            print_with_timestamp("Fetching ShowGUIDs, Years, and ShowNames from ShowList table...")
             show_data_list = get_show_data_from_database(conn, skip_processed=skip_processed, start_from_show_guid=start_from_show_guid)
-            print(f"[OK] Found {len(show_data_list)} shows\n")
+            print_with_timestamp(f"[OK] Found {len(show_data_list)} shows\n")
             
             if not show_data_list:
-                print("[WARNING] No ShowGUIDs found in database. Please run scrape_shows_by_year.py first.")
+                print_with_timestamp("[WARNING] No ShowGUIDs found in database. Please run scrape_shows_by_year.py first.")
                 return
             
             # Scrape results for each show
             total_results = 0
             for idx, (show_list_id, show_guid, year, show_name) in enumerate(show_data_list, 1):
-                print(f"\nProcessing show {idx}/{len(show_data_list)}...")
-                results_count = scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_name, conn)
+                print_with_timestamp(f"\nProcessing show {idx}/{len(show_data_list)}...")
+                results_count, driver = scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_name, conn)
                 total_results += results_count
                 
                 # Small delay between shows
                 time.sleep(2)
         
-        print(f"\n{'='*60}")
-        print(f"Scraping complete! Total results collected: {total_results}")
-        print(f"{'='*60}\n")
+        print_with_timestamp(f"\n{'='*60}")
+        print_with_timestamp(f"Scraping complete! Total results collected: {total_results}")
+        print_with_timestamp(f"{'='*60}\n")
         
     except KeyboardInterrupt:
-        print("\n\n[WARNING] Scraping interrupted by user")
+        print_with_timestamp("\n\n[WARNING] Scraping interrupted by user")
     except Exception as e:
-        print(f"\n[ERROR] Fatal Error: {e}")
+        print_with_timestamp(f"\n[ERROR] Fatal Error: {e}")
         import traceback
         traceback.print_exc()
     finally:
         if conn:
             try:
                 conn.close()
-                print("[OK] Database connection closed")
+                print_with_timestamp("[OK] Database connection closed")
             except:
                 pass
         if driver:
-            print("\nClosing browser...")
+            print_with_timestamp("\nClosing browser...")
             driver.quit()
 
 if __name__ == '__main__':
@@ -2628,7 +3160,7 @@ if __name__ == '__main__':
         elif arg_lower in ['--start-from', '-s']:
             if i + 1 < len(sys.argv):
                 start_from_show_guid = sys.argv[i + 1]
-                print(f"[INFO] Command-line argument detected: Will start from ShowGUID {start_from_show_guid}")
+                print_with_timestamp(f"[INFO] Command-line argument detected: Will start from ShowGUID {start_from_show_guid}")
                 i += 1  # Skip the next argument as it's the ShowGUID value
             else:
                 print("[ERROR] --start-from requires a ShowGUID value")

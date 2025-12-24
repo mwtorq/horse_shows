@@ -843,12 +843,80 @@ def save_to_database(all_shows, conn):
         conn.rollback()
         raise
 
-def main():
+def parse_years(years_arg):
+    """Parse years argument into a list of years
+    
+    Supports:
+    - Single year: 2024
+    - Range: 2025-2020 (inclusive, descending)
+    - Comma-separated: 2025,2024,2023
+    - Range with step: 2025-2020:2 (step of 2)
+    
+    Returns: List of years (descending order)
+    """
+    if not years_arg:
+        return list(range(2025, 2014, -1))  # Default: 2025 down to 2015
+    
+    years = []
+    
+    # Handle comma-separated values
+    parts = [p.strip() for p in years_arg.split(',')]
+    
+    for part in parts:
+        if '-' in part:
+            # Range format: start-end or start-end:step
+            range_parts = part.split(':')
+            step = -1  # Default step (descending)
+            if len(range_parts) > 1:
+                step = -int(range_parts[1])  # Negative for descending
+            
+            range_values = range_parts[0].split('-')
+            if len(range_values) == 2:
+                start = int(range_values[0].strip())
+                end = int(range_values[1].strip())
+                # Ensure descending order
+                if start < end:
+                    start, end = end, start
+                    step = abs(step) if step > 0 else -abs(step)
+                years.extend(range(start, end - 1, step))
+            else:
+                raise ValueError(f"Invalid range format: {part}")
+        else:
+            # Single year
+            years.append(int(part.strip()))
+    
+    # Remove duplicates, sort descending, and return
+    return sorted(set(years), reverse=True)
+
+def main(years_arg=None):
+    """Main function
+    
+    Args:
+        years_arg: Optional string specifying years to scrape (e.g., "2025-2020" or "2025,2024,2023")
+                   If None, uses default range 2025-2015
+    """
     url = 'https://horseshowsonline.com/ShowSelector.aspx'
-    years = range(2025, 2014, -1)  # 2025 down to 2015
+    
+    try:
+        years = parse_years(years_arg)
+    except ValueError as e:
+        print(f"[ERROR] Invalid years format: {e}")
+        print("Supported formats:")
+        print("  - Single year: 2024")
+        print("  - Range: 2025-2020")
+        print("  - Comma-separated: 2025,2024,2023")
+        print("  - Range with step: 2025-2020:2")
+        return
+    
+    if not years:
+        print("[ERROR] No valid years specified")
+        return
+    
+    years_str = f"{years[0]}-{years[-1]}" if len(years) > 1 else str(years[0])
     
     print("\n" + "=" * 60)
-    print("HorseShowsOnline - Show Scraper (2025-2015)")
+    print(f"HorseShowsOnline - Show Scraper (Years: {years_str})")
+    print(f"Processing {len(years)} year(s): {', '.join(map(str, years))}")
     print("=" * 60 + "\n")
     
     driver = None
@@ -951,5 +1019,31 @@ def main():
             driver.quit()
 
 if __name__ == '__main__':
-    main()
+    import sys
+    
+    years_arg = None
+    
+    if len(sys.argv) > 1:
+        # Check for help
+        if sys.argv[1].lower() in ['--help', '-h', '/?']:
+            print("Usage: python scrape_shows_by_year.py [YEARS]")
+            print("\nArguments:")
+            print("  YEARS: Optional specification of years to scrape")
+            print("\nYear formats:")
+            print("  - Single year: 2024")
+            print("  - Range: 2025-2020 (inclusive, descending)")
+            print("  - Comma-separated: 2025,2024,2023")
+            print("  - Range with step: 2025-2020:2 (step of 2)")
+            print("\nExamples:")
+            print("  python scrape_shows_by_year.py                    # Default: 2025-2015")
+            print("  python scrape_shows_by_year.py 2024               # Single year")
+            print("  python scrape_shows_by_year.py 2025-2020          # Range 2025 to 2020")
+            print("  python scrape_shows_by_year.py 2025,2023,2021     # Specific years")
+            print("  python scrape_shows_by_year.py 2025-2020:2        # Range with step 2")
+            sys.exit(0)
+        
+        years_arg = sys.argv[1]
+        print(f"[INFO] Years argument provided: {years_arg}")
+    
+    main(years_arg=years_arg)
 
