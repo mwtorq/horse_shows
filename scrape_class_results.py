@@ -1005,8 +1005,11 @@ def get_incomplete_classes_for_show(conn, show_list_id, skip_processed=True):
     """Get list of ShowClass IDs that still need processing for a show
     
     Includes:
-    1. Classes with Placings > 0 that don't have ShowResults (placing entries)
-    2. Classes that have ShowResults but are missing non-placing entries (Entries > Placings and NonPlacingComplete = 0)
+    1. Classes with Placings > 0 that don't have placing ShowResults (Place > 0) - NonPlacingComplete is ignored for placing entries
+    2. Classes that have placing results but are missing non-placing entries (Entries > Placings and NonPlacingComplete = 0)
+    
+    Note: NonPlacingComplete field only applies to non-placing entries (Place = 0).
+    Placing entries (Place > 0) are always collected regardless of NonPlacingComplete status.
     
     Args:
         conn: Database connection
@@ -1022,25 +1025,32 @@ def get_incomplete_classes_for_show(conn, show_list_id, skip_processed=True):
         
         if skip_processed:
             # Get classes that need processing:
-            # 1. Classes with Placings > 0 that don't have ShowResults (placing entries)
-            # 2. Classes that have ShowResults but are missing non-placing entries
+            # 1. Classes with Placings > 0 that don't have placing ShowResults (Place > 0) - ignore NonPlacingComplete
+            # 2. Classes that have placing results but are missing non-placing entries (Entries > Placings and NonPlacingComplete = 0)
             cursor.execute("""
                 SELECT DISTINCT sc.ID
                 FROM sResults.ShowClass sc
                 WHERE sc.ShowListID = ?
                 AND sc.Placings > 0
                 AND (
-                    -- Case 1: No placing results at all
+                    -- Case 1: No placing results at all (Place > 0) - ignore NonPlacingComplete for placing entries
                     NOT EXISTS (
                         SELECT 1
                         FROM sResults.ShowResults sr
                         WHERE sr.ShowClassID = sc.ID
+                        AND sr.Place > 0
                     )
                     OR
-                    -- Case 2: Has placing results but missing non-placing entries
+                    -- Case 2: Has placing results but missing non-placing entries (only check NonPlacingComplete for non-placing)
                     (
                         sc.Entries > sc.Placings
                         AND ISNULL(sc.NonPlacingComplete, 0) = 0
+                        AND EXISTS (
+                            SELECT 1
+                            FROM sResults.ShowResults sr
+                            WHERE sr.ShowClassID = sc.ID
+                            AND sr.Place > 0
+                        )
                     )
                 )
                 ORDER BY sc.ID
@@ -3476,7 +3486,9 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                                 print_with_timestamp(f"      [WARNING] No entry detail rows found after expansion")
                             
                             # Check if there are non-placing entries to capture (Entries > Placings)
-                            # Skip if already marked as complete
+                            # Note: NonPlacingComplete only applies to non-placing entries (Place = 0)
+                            # Placing entries (Place > 0) are always collected regardless of NonPlacingComplete status
+                            # Skip non-placing entries if already marked as complete
                             if max_entries and max_placings and max_entries > max_placings and not nonplacing_complete:
                                 nonplacing_count = max_entries - max_placings
                                 print_with_timestamp(f"      Checking for non-placing entries ({nonplacing_count} expected)...")
@@ -3868,26 +3880,22 @@ def main(skip_processed=True, load_missing_classes=False, start_from_show_guid=N
             for idx, (show_list_id, show_guid, year, show_name) in enumerate(show_data_list, 1):
                 print_with_timestamp(f"\nProcessing show {idx}/{len(show_data_list)}...")
                 
-                # When loading a single show, check for incomplete classes to resume from where left off
+                # When loading a single show with --show-guid, always only load classes where results are missing
                 incomplete_class_ids = None
                 if single_show_guid:
-                    if skip_processed:
-                        # Only process incomplete classes (resume mode)
-                        print_with_timestamp(f"  Checking for incomplete classes to resume processing...")
-                        incomplete_class_ids = get_incomplete_classes_for_show(conn, show_list_id, skip_processed=True)
-                        
-                        if incomplete_class_ids:
-                            print_with_timestamp(f"  [RESUME] Found {len(incomplete_class_ids)} incomplete classes, resuming from where left off")
-                            print_with_timestamp(f"  [RESUME] Will process only incomplete classes (skipping already completed classes)")
-                        else:
-                            # All classes are complete
-                            print_with_timestamp(f"  [INFO] All classes are complete. Use --process-all to reprocess all classes.")
-                            print_with_timestamp(f"  Skipping show (all classes complete)")
-                            continue
+                    # Always check for incomplete classes when using --show-guid
+                    # This ensures we only process classes with missing results
+                    print_with_timestamp(f"  Checking for classes with missing results...")
+                    incomplete_class_ids = get_incomplete_classes_for_show(conn, show_list_id, skip_processed=True)
+                    
+                    if incomplete_class_ids:
+                        print_with_timestamp(f"  [RESUME] Found {len(incomplete_class_ids)} classes with missing results")
+                        print_with_timestamp(f"  [RESUME] Will process only classes with missing results (skipping already completed classes)")
                     else:
-                        # Process all classes (reprocess mode)
-                        print_with_timestamp(f"  [INFO] --process-all specified: will reprocess all classes")
-                        # incomplete_class_ids remains None, so all classes will be processed
+                        # All classes are complete
+                        print_with_timestamp(f"  [INFO] All classes have complete results. No missing results to process.")
+                        print_with_timestamp(f"  Skipping show (all classes complete)")
+                        continue
                 
                 # Pass incomplete_class_ids to scrape function to resume from where left off
                 results_count, driver = scrape_class_results_for_show(
