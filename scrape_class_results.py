@@ -1001,16 +1001,101 @@ def get_show_list_id_from_guid(conn, show_guid):
         print_with_timestamp(f"[ERROR] Error getting ShowListID from ShowGUID {show_guid}: {e}")
         return None
 
-def get_show_data_from_database(conn, skip_processed=True, start_from_show_guid=None):
+def get_incomplete_classes_for_show(conn, show_list_id, skip_processed=True):
+    """Get list of ShowClass IDs that still need processing for a show
+    
+    Includes:
+    1. Classes with Placings > 0 that don't have ShowResults (placing entries)
+    2. Classes that have ShowResults but are missing non-placing entries (Entries > Placings and NonPlacingComplete = 0)
+    
+    Args:
+        conn: Database connection
+        show_list_id: ShowList ID
+        skip_processed: If True, only return classes that need processing.
+                       If False, return all classes with Placings > 0 (for reprocessing).
+    
+    Returns:
+        List of ShowClass IDs that need processing, or None if all classes should be processed
+    """
+    try:
+        cursor = conn.cursor()
+        
+        if skip_processed:
+            # Get classes that need processing:
+            # 1. Classes with Placings > 0 that don't have ShowResults (placing entries)
+            # 2. Classes that have ShowResults but are missing non-placing entries
+            cursor.execute("""
+                SELECT DISTINCT sc.ID
+                FROM sResults.ShowClass sc
+                WHERE sc.ShowListID = ?
+                AND sc.Placings > 0
+                AND (
+                    -- Case 1: No placing results at all
+                    NOT EXISTS (
+                        SELECT 1
+                        FROM sResults.ShowResults sr
+                        WHERE sr.ShowClassID = sc.ID
+                    )
+                    OR
+                    -- Case 2: Has placing results but missing non-placing entries
+                    (
+                        sc.Entries > sc.Placings
+                        AND ISNULL(sc.NonPlacingComplete, 0) = 0
+                    )
+                )
+                ORDER BY sc.ID
+            """, show_list_id)
+        else:
+            # Get all classes with Placings > 0 (for reprocessing)
+            cursor.execute("""
+                SELECT sc.ID
+                FROM sResults.ShowClass sc
+                WHERE sc.ShowListID = ?
+                AND sc.Placings > 0
+                ORDER BY sc.ID
+            """, show_list_id)
+        
+        incomplete_class_ids = [row[0] for row in cursor.fetchall()]
+        cursor.close()
+        
+        return incomplete_class_ids if incomplete_class_ids else None
+    except Exception as e:
+        print_with_timestamp(f"[WARNING] Error getting incomplete classes for ShowListID {show_list_id}: {e}")
+        return None
+
+def get_show_data_from_database(conn, skip_processed=True, start_from_show_guid=None, single_show_guid=None):
     """Get ID, ShowGUID, Year, and ShowName from ShowList table where EndDate < today, ordered by ID
     
     Args:
         conn: Database connection
         skip_processed: If True, skip shows that already have ShowClass or ShowResults data
         start_from_show_guid: Optional ShowGUID to start from (only processes ShowListID >= that ShowGUID's ID)
+        single_show_guid: Optional ShowGUID to load only that specific show
     """
     try:
         cursor = conn.cursor()
+        
+        # If single_show_guid is provided, filter for exactly that ShowGUID
+        # When loading a single show, be more lenient with criteria (only require ShowGUID exists)
+        # Ignore skip_processed when loading a single show (user explicitly requested it)
+        if single_show_guid:
+            print_with_timestamp(f"[INFO] Loading single show: ShowGUID {single_show_guid}")
+            # Always load the show when explicitly requested, regardless of skip_processed
+            cursor.execute("""
+                SELECT ID, ShowGUID, Year, ShowName 
+                FROM sResults.ShowList 
+                WHERE ShowGUID = ?
+                AND ShowGUID IS NOT NULL AND ShowGUID != ''
+                ORDER BY ID
+            """, single_show_guid)
+            
+            show_data = [(row[0], row[1], row[2], row[3]) for row in cursor.fetchall()]
+            cursor.close()
+            if show_data:
+                print_with_timestamp(f"[OK] Found show: {show_data[0][3]} (ShowGUID: {single_show_guid})")
+            else:
+                print_with_timestamp(f"[WARNING] ShowGUID {single_show_guid} not found in database")
+            return show_data
         
         # Get starting ShowListID if ShowGUID provided
         start_from_id = None
@@ -1093,17 +1178,116 @@ def get_show_data_from_database(conn, skip_processed=True, start_from_show_guid=
         traceback.print_exc()
         return []
 
-def get_shows_with_missing_classes(conn, start_from_show_guid=None):
+def get_shows_with_missing_classes(conn, start_from_show_guid=None, single_show_guid=None):
     """Get shows that have ShowClass rows with Placings > 0 that don't have corresponding ShowResults
     
     Args:
         conn: Database connection
         start_from_show_guid: Optional ShowGUID to start from (only processes ShowListID >= that ShowGUID's ID)
+        single_show_guid: Optional ShowGUID to load only that specific show
     
     Returns: List of tuples (show_list_id, show_guid, year, show_name, list of ShowClass IDs to process)
     """
     try:
         cursor = conn.cursor()
+        
+        # If single_show_guid is provided, filter for exactly that ShowGUID
+        # When loading a single show, be more lenient with criteria (only require ShowGUID exists)
+        if single_show_guid:
+            print_with_timestamp(f"[INFO] Loading single show: ShowGUID {single_show_guid}")
+            cursor.execute("""
+                SELECT DISTINCT
+                    sl.ID,
+                    sl.ShowGUID,
+                    sl.Year,
+                    sl.ShowName
+                FROM sResults.ShowList sl
+                WHERE sl.ShowGUID = ?
+                AND sl.ShowGUID IS NOT NULL AND sl.ShowGUID != ''
+                -- Has ShowClass rows with Placings > 0 that don't have ShowResults
+                AND EXISTS (
+                    SELECT 1
+                    FROM sResults.ShowClass sc
+                    WHERE sc.ShowListID = sl.ID
+                    AND sc.Placings > 0
+                    AND NOT EXISTS (
+                        SELECT 1 
+                        FROM sResults.ShowResults sr
+                        WHERE sr.ShowClassID = sc.ID
+                    )
+                )
+                ORDER BY sl.ID
+            """, single_show_guid)
+            
+            show_data = cursor.fetchall()
+            result = []
+            
+            # For each show, get the specific ShowClass IDs that need processing
+            for row in show_data:
+                show_list_id = row[0]
+                show_guid = row[1]
+                year = row[2]
+                show_name = row[3]
+                
+                # Get ShowClass IDs with Placings > 0 that don't have ShowResults
+                cursor.execute("""
+                    SELECT sc.ID
+                    FROM sResults.ShowClass sc
+                    WHERE sc.ShowListID = ?
+                    AND sc.Placings > 0
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM sResults.ShowResults sr
+                        WHERE sr.ShowClassID = sc.ID
+                    )
+                    ORDER BY sc.ID
+                """, show_list_id)
+                
+                missing_class_ids = [r[0] for r in cursor.fetchall()]
+                
+                if missing_class_ids:
+                    result.append((show_list_id, show_guid, year, show_name, missing_class_ids))
+            
+            cursor.close()
+            if result:
+                print_with_timestamp(f"[OK] Found show: {result[0][3]} (ShowGUID: {single_show_guid})")
+                print_with_timestamp(f"[OK] Total missing classes to process: {sum(len(ids) for _, _, _, _, ids in result)}")
+            else:
+                # Provide more detailed error message
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT ID, ShowGUID, Year, ShowName
+                    FROM sResults.ShowList 
+                    WHERE ShowGUID = ?
+                """, single_show_guid)
+                check_row = cursor.fetchone()
+                cursor.close()
+                
+                if check_row:
+                    show_id, show_guid, year, show_name = check_row
+                    # Check if it has missing classes
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT COUNT(*)
+                        FROM sResults.ShowClass sc
+                        WHERE sc.ShowListID = ?
+                        AND sc.Placings > 0
+                        AND NOT EXISTS (
+                            SELECT 1
+                            FROM sResults.ShowResults sr
+                            WHERE sr.ShowClassID = sc.ID
+                        )
+                    """, show_id)
+                    missing_count = cursor.fetchone()[0]
+                    cursor.close()
+                    
+                    if missing_count == 0:
+                        print_with_timestamp(f"[WARNING] ShowGUID {single_show_guid} found in database ({show_name}) but has no missing classes")
+                    else:
+                        print_with_timestamp(f"[WARNING] ShowGUID {single_show_guid} found in database ({show_name}) but query did not return it")
+                else:
+                    print_with_timestamp(f"[WARNING] ShowGUID {single_show_guid} not found in database")
+            return result
         
         # Get starting ShowListID if ShowGUID provided
         start_from_id = None
@@ -2523,11 +2707,25 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                     max_entries = class_row_data[0] if class_row_data and class_row_data[0] is not None else None
                     max_placings = class_row_data[1] if class_row_data and class_row_data[1] is not None else None
                     nonplacing_complete = class_row_data[2] if class_row_data and class_row_data[2] is not None else 0
+                    
+                    # Check if class already has placing results
+                    cursor.execute("""
+                        SELECT COUNT(*) 
+                        FROM sResults.ShowResults 
+                        WHERE ShowClassID = ? AND Place > 0
+                    """, show_class_id)
+                    existing_placing_count = cursor.fetchone()[0]
+                    has_existing_placings = existing_placing_count > 0
                     cursor.close()
+                    
+                    # Log if we're processing a class that already has placing results but needs non-placing entries
+                    if has_existing_placings and max_entries and max_placings and max_entries > max_placings and not nonplacing_complete:
+                        print_with_timestamp(f"      [RESUME] Class already has {existing_placing_count} placing results, will capture missing non-placing entries")
                 except:
                     max_entries = None
                     max_placings = None
                     nonplacing_complete = 0
+                    has_existing_placings = False
                 
                 # Track unique entries to prevent duplicates
                 seen_entries = set()
@@ -3282,8 +3480,6 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                             if max_entries and max_placings and max_entries > max_placings and not nonplacing_complete:
                                 nonplacing_count = max_entries - max_placings
                                 print_with_timestamp(f"      Checking for non-placing entries ({nonplacing_count} expected)...")
-                            elif nonplacing_complete:
-                                print_with_timestamp(f"      Skipping non-placing entries (already marked as complete)")
                                 
                                 # Find non-placing entries grid (tables that are NOT grPlacing)
                                 nonplacing_detail_rows = []
@@ -3503,8 +3699,10 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                                             cursor_nonplacing.close()
                                     elif nonplacing_column_map:
                                         print_with_timestamp(f"      [WARNING] No non-placing entry details extracted from {len(nonplacing_detail_rows)} rows")
-                                elif max_entries and max_placings and max_entries > max_placings:
+                                else:
                                     print_with_timestamp(f"      [WARNING] No non-placing entry rows found (expected {nonplacing_count})")
+                            elif nonplacing_complete:
+                                print_with_timestamp(f"      Skipping non-placing entries (already marked as complete)")
                         else:
                             # Expansion failed - report error and potentially retry
                             print_with_timestamp(f"      [ERROR] Failed to expand row {row_idx} (row_expanded=False)")
@@ -3588,13 +3786,14 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
         traceback.print_exc()
         return results_count, driver  # Return driver in case it was reconnected
 
-def main(skip_processed=True, load_missing_classes=False, start_from_show_guid=None, sleep_short=0.5, sleep_medium=1):
+def main(skip_processed=True, load_missing_classes=False, start_from_show_guid=None, single_show_guid=None, sleep_short=0.5, sleep_medium=1):
     """Main function to scrape class results
     
     Args:
         skip_processed: If True, skip shows that already have ShowClass or ShowResults data (default: True)
         load_missing_classes: If True, load only classes with Placings > 0 that don't have ShowResults (default: False)
         start_from_show_guid: Optional ShowGUID to start from (only processes ShowListID >= that ShowGUID's ID)
+        single_show_guid: Optional ShowGUID to load only that specific show
         sleep_short: Short sleep duration in seconds (default: 0.5)
         sleep_medium: Medium sleep duration in seconds (default: 1)
     """
@@ -3634,12 +3833,12 @@ def main(skip_processed=True, load_missing_classes=False, start_from_show_guid=N
         
         # Log script start
         log_import_activity(conn, 'scrape_class_results.py', action='START', 
-                          additional_info=f'skip_processed={skip_processed}, load_missing_classes={load_missing_classes}, start_from_show_guid={start_from_show_guid}')
+                          additional_info=f'skip_processed={skip_processed}, load_missing_classes={load_missing_classes}, start_from_show_guid={start_from_show_guid}, single_show_guid={single_show_guid}')
         
         # Get ShowGUIDs, Years, and ShowNames from database
         if load_missing_classes:
             print_with_timestamp("Fetching shows with missing class results...")
-            show_data_list = get_shows_with_missing_classes(conn, start_from_show_guid=start_from_show_guid)
+            show_data_list = get_shows_with_missing_classes(conn, start_from_show_guid=start_from_show_guid, single_show_guid=single_show_guid)
             print_with_timestamp(f"[OK] Found {len(show_data_list)} shows with missing classes\n")
             
             if not show_data_list:
@@ -3657,7 +3856,7 @@ def main(skip_processed=True, load_missing_classes=False, start_from_show_guid=N
                 time.sleep(sleep_medium)
         else:
             print_with_timestamp("Fetching ShowGUIDs, Years, and ShowNames from ShowList table...")
-            show_data_list = get_show_data_from_database(conn, skip_processed=skip_processed, start_from_show_guid=start_from_show_guid)
+            show_data_list = get_show_data_from_database(conn, skip_processed=skip_processed, start_from_show_guid=start_from_show_guid, single_show_guid=single_show_guid)
             print_with_timestamp(f"[OK] Found {len(show_data_list)} shows\n")
             
             if not show_data_list:
@@ -3668,7 +3867,34 @@ def main(skip_processed=True, load_missing_classes=False, start_from_show_guid=N
             total_results = 0
             for idx, (show_list_id, show_guid, year, show_name) in enumerate(show_data_list, 1):
                 print_with_timestamp(f"\nProcessing show {idx}/{len(show_data_list)}...")
-                results_count, driver = scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_name, conn, sleep_short=sleep_short, sleep_medium=sleep_medium)
+                
+                # When loading a single show, check for incomplete classes to resume from where left off
+                incomplete_class_ids = None
+                if single_show_guid:
+                    if skip_processed:
+                        # Only process incomplete classes (resume mode)
+                        print_with_timestamp(f"  Checking for incomplete classes to resume processing...")
+                        incomplete_class_ids = get_incomplete_classes_for_show(conn, show_list_id, skip_processed=True)
+                        
+                        if incomplete_class_ids:
+                            print_with_timestamp(f"  [RESUME] Found {len(incomplete_class_ids)} incomplete classes, resuming from where left off")
+                            print_with_timestamp(f"  [RESUME] Will process only incomplete classes (skipping already completed classes)")
+                        else:
+                            # All classes are complete
+                            print_with_timestamp(f"  [INFO] All classes are complete. Use --process-all to reprocess all classes.")
+                            print_with_timestamp(f"  Skipping show (all classes complete)")
+                            continue
+                    else:
+                        # Process all classes (reprocess mode)
+                        print_with_timestamp(f"  [INFO] --process-all specified: will reprocess all classes")
+                        # incomplete_class_ids remains None, so all classes will be processed
+                
+                # Pass incomplete_class_ids to scrape function to resume from where left off
+                results_count, driver = scrape_class_results_for_show(
+                    driver, show_list_id, show_guid, year, show_name, conn, 
+                    show_class_ids=incomplete_class_ids, 
+                    sleep_short=sleep_short, sleep_medium=sleep_medium
+                )
                 total_results += results_count
                 
                 # Small delay between shows
@@ -3742,6 +3968,7 @@ if __name__ == '__main__':
     skip_processed = True
     load_missing_classes = False
     start_from_show_guid = None
+    single_show_guid = None
     
     i = 1
     while i < len(sys.argv):
@@ -3762,20 +3989,34 @@ if __name__ == '__main__':
             else:
                 print_with_timestamp("[ERROR] --start-from requires a ShowGUID value")
                 sys.exit(1)
+        elif arg_lower in ['--show-guid', '--single-show', '-g']:
+            if i + 1 < len(sys.argv):
+                single_show_guid = sys.argv[i + 1]
+                print_with_timestamp(f"[INFO] Command-line argument detected: Will load single show: ShowGUID {single_show_guid}")
+                i += 1  # Skip the next argument as it's the ShowGUID value
+            else:
+                print_with_timestamp("[ERROR] --show-guid requires a ShowGUID value")
+                sys.exit(1)
         elif arg_lower in ['--help', '-h']:
             print_with_timestamp("Usage: python scrape_class_results.py [OPTIONS]")
             print_with_timestamp("Options:")
             print_with_timestamp("  --process-all, -a, --all: Process all shows, including those with existing ShowClass or ShowResults data")
             print_with_timestamp("  --load-missing, -m, --missing: Load only missing class results (classes with Placings > 0 that don't have ShowResults)")
             print_with_timestamp("  --start-from SHOWGUID, -s SHOWGUID: Start processing from the specified ShowGUID (only processes ShowListID >= that ShowGUID's ID)")
+            print_with_timestamp("  --show-guid SHOWGUID, --single-show SHOWGUID, -g SHOWGUID: Load only the specified show by ShowGUID")
             print_with_timestamp("  Default: Skip shows with existing data")
             sys.exit(0)
         
         i += 1
     
+    # Validate mutually exclusive parameters
+    if single_show_guid and start_from_show_guid:
+        print_with_timestamp("[ERROR] --show-guid and --start-from cannot be used together")
+        sys.exit(1)
+    
     # load_missing_classes takes precedence over skip_processed
     if load_missing_classes:
         skip_processed = False
     
-    main(skip_processed=skip_processed, load_missing_classes=load_missing_classes, start_from_show_guid=start_from_show_guid, sleep_short=0.5, sleep_medium=1)
+    main(skip_processed=skip_processed, load_missing_classes=load_missing_classes, start_from_show_guid=start_from_show_guid, single_show_guid=single_show_guid, sleep_short=0.5, sleep_medium=1)
 

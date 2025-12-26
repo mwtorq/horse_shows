@@ -8,3 +8,5 @@ SELECT [ID]
       ,[AdditionalInfo]
   FROM [HorseShows].[sResults].[ImportLog]
   ORDER BY LogTimestamp DESC
+
+  select * from [HorseShows].[sResults].[ImportLog] where targettable='showclass'
