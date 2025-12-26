@@ -989,6 +989,19 @@ def main(years_arg=None):
         
     except KeyboardInterrupt:
         print("\n\n[WARNING] Scraping interrupted by user")
+        # Explicitly terminate browser on interrupt
+        if driver:
+            try:
+                print("\nTerminating browser session...")
+                driver.quit()
+            except Exception as e:
+                print(f"[WARNING] Error terminating browser: {e}")
+                # Try to force kill if normal quit fails
+                try:
+                    if hasattr(driver, 'service') and hasattr(driver.service, 'process'):
+                        driver.service.process.kill()
+                except:
+                    pass
         if all_shows:
             # Try to save to database
             try:
@@ -1015,8 +1028,17 @@ def main(years_arg=None):
                 pass
     finally:
         if driver:
-            print("\nClosing browser...")
-            driver.quit()
+            try:
+                print("\nClosing browser...")
+                driver.quit()
+            except Exception as e:
+                print(f"[WARNING] Error closing browser in finally: {e}")
+                # Try to force kill if normal quit fails
+                try:
+                    if hasattr(driver, 'service') and hasattr(driver.service, 'process'):
+                        driver.service.process.kill()
+                except:
+                    pass
 
 if __name__ == '__main__':
     import sys

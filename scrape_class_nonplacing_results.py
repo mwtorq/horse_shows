@@ -337,13 +337,18 @@ def scrape_nonplacing_results_for_class(driver, show_list_id, show_guid, year, s
             all_rows = grid.find_elements(By.TAG_NAME, "tr")
             rows = []
             for r in all_rows:
-                row_id = r.get_attribute('id') or ''
-                row_class = r.get_attribute('class') or ''
-                # Only include main grid rows, not detail rows (grPlacing, grNonPlacing, or dxdt containers)
-                if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
-                    # Exclude detail rows from nested grids
-                    if 'grPlacing' not in row_id and 'grNonPlacing' not in row_id and 'dxdt' not in row_id:
-                        rows.append(r)
+                try:
+                    row_id = r.get_attribute('id') or ''
+                    row_class = r.get_attribute('class') or ''
+                    # Only include main grid rows, not detail rows (grPlacing, grNonPlacing, or dxdt containers)
+                    if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
+                        # Exclude detail rows from nested grids
+                        if 'grPlacing' not in row_id and 'grNonPlacing' not in row_id and 'dxdt' not in row_id:
+                            rows.append(r)
+                except StaleElementReferenceException:
+                    continue
+                except Exception:
+                    continue
         
         if row_idx > len(rows):
             print_with_timestamp(f"    [WARNING] Row {row_idx} no longer available")
@@ -402,47 +407,94 @@ def scrape_nonplacing_results_for_class(driver, show_list_id, show_guid, year, s
         if not class_row_id:
             # Try alternative: re-find all rows and count only class rows (not detail rows)
             print_with_timestamp(f"    [WARNING] Could not get class row ID for row {row_idx}, re-finding class rows only")
-            # Re-find the row and try again, but this time be more strict about what counts as a class row
+            # Wait a moment for page to stabilize
+            time.sleep(sleep_short)
+            # Re-find the row and try again, using the same filtering logic as initial row finding
             try:
-                grid = driver.find_element(By.CSS_SELECTOR, 
-                    "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+                # Try to find grid using multiple selectors (same as scrape_nonplacing_results_for_show)
+                grid = None
+                grid_selectors = [
+                    "table[id*='grMaster'][id*='DXMainTable']",
+                    "table[id*='grMaster']",
+                    "table[id*='DXMainTable']",
+                    "table.dxgvTable_Office2010Blue",
+                    "table.dxgvTable",
+                ]
+                
+                for selector in grid_selectors:
+                    try:
+                        grids = driver.find_elements(By.CSS_SELECTOR, selector)
+                        for g in grids:
+                            if g.is_displayed():
+                                tr_count = len(g.find_elements(By.TAG_NAME, "tr"))
+                                if tr_count > 1:
+                                    grid = g
+                                    break
+                        if grid:
+                            break
+                    except:
+                        continue
+                
+                if not grid:
+                    print_with_timestamp(f"    [ERROR] Could not find grid for retry")
+                    return driver, 0
+                
                 all_rows = grid.find_elements(By.TAG_NAME, "tr")
                 class_rows_only = []
                 for r in all_rows:
                     try:
                         row_id = r.get_attribute('id') or ''
                         row_class = r.get_attribute('class') or ''
+                        # Use the same filtering logic as initial row finding (lines 343-346)
                         # Only include main grid rows, not detail rows
-                        # Class rows must have DataRow in ID, NOT have dxdt/grPlacing/grNonPlacing, and have grMaster in path
                         if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
-                            # Exclude detail rows from nested grids - be very strict
-                            if 'dxdt' not in row_id and 'grPlacing' not in row_id and 'grNonPlacing' not in row_id:
-                                # Additional check: must be from main grid (has grMaster in path)
-                                if 'grMaster' in row_id or ('DXMainTable' in row_id and 'dxdt' not in row_id):
-                                    class_rows_only.append(r)
+                            # Exclude detail rows from nested grids - same logic as initial finding
+                            if 'grPlacing' not in row_id and 'grNonPlacing' not in row_id and 'dxdt' not in row_id:
+                                class_rows_only.append(r)
                     except StaleElementReferenceException:
                         continue
                     except Exception:
                         continue
                 
+                print_with_timestamp(f"    [DEBUG] Found {len(class_rows_only)} class rows (excluding detail rows) out of {len(all_rows)} total rows")
+                
                 if row_idx <= len(class_rows_only):
                     class_row = class_rows_only[row_idx - 1]
                     try:
                         temp_id = class_row.get_attribute('id') or ''
+                        # Validate it's not a detail row
                         if temp_id and 'dxdt' not in temp_id and 'grPlacing' not in temp_id and 'grNonPlacing' not in temp_id:
-                            if 'grMaster' in temp_id or 'DXMainTable' in temp_id:
-                                class_row_id = temp_id
-                                print_with_timestamp(f"    [OK] Retrieved row ID on retry: {class_row_id}")
-                            else:
-                                print_with_timestamp(f"    [WARNING] Row ID format unexpected: {temp_id}")
+                            class_row_id = temp_id
+                            print_with_timestamp(f"    [OK] Retrieved row ID on retry: {class_row_id}")
                         elif temp_id:
                             print_with_timestamp(f"    [WARNING] Row ID still contains detail grid identifier: {temp_id}")
                     except StaleElementReferenceException:
                         print_with_timestamp(f"    [WARNING] Stale element when getting row ID on retry")
                 else:
                     print_with_timestamp(f"    [WARNING] Row index {row_idx} out of range (found {len(class_rows_only)} class rows)")
+                    # Debug: print first few row IDs to understand structure
+                    if class_rows_only:
+                        print_with_timestamp(f"    [DEBUG] First few class row IDs:")
+                        for i, r in enumerate(class_rows_only[:5], 1):
+                            try:
+                                debug_id = r.get_attribute('id') or 'no-id'
+                                print_with_timestamp(f"      Row {i}: {debug_id[:80]}")
+                            except:
+                                print_with_timestamp(f"      Row {i}: [error getting ID]")
+                    else:
+                        # Debug: print all row IDs to see what we're getting
+                        print_with_timestamp(f"    [DEBUG] No class rows found. Sample of all row IDs:")
+                        for i, r in enumerate(all_rows[:10], 1):
+                            try:
+                                debug_id = r.get_attribute('id') or 'no-id'
+                                debug_class = r.get_attribute('class') or 'no-class'
+                                print_with_timestamp(f"      Row {i}: id='{debug_id[:60]}', class='{debug_class[:40]}'")
+                            except:
+                                print_with_timestamp(f"      Row {i}: [error getting attributes]")
             except Exception as e2:
                 print_with_timestamp(f"    [ERROR] Error on retry: {e2}")
+                import traceback
+                traceback.print_exc()
         
         if not class_row_id:
             print_with_timestamp(f"    [ERROR] Could not get valid class row ID for row {row_idx} after retry")
@@ -1156,15 +1208,34 @@ def main(start_from_show_guid=None, sleep_short=0.5, sleep_medium=1):
     except KeyboardInterrupt:
         print_with_timestamp("\n\n[WARNING] Scraping interrupted by user")
         if conn:
-            log_import_activity(conn, 'scrape_class_nonplacing_results.py', action='INTERRUPTED', 
-                              error_detail='User interrupted scraping')
+            try:
+                log_import_activity(conn, 'scrape_class_nonplacing_results.py', action='INTERRUPTED', 
+                                  error_detail='User interrupted scraping')
+            except:
+                pass
+        # Explicitly terminate browser on interrupt
+        if driver:
+            try:
+                print_with_timestamp("\nTerminating browser session...")
+                driver.quit()
+            except Exception as e:
+                print_with_timestamp(f"[WARNING] Error terminating browser: {e}")
+                # Try to force kill if normal quit fails
+                try:
+                    if hasattr(driver, 'service') and hasattr(driver.service, 'process'):
+                        driver.service.process.kill()
+                except:
+                    pass
     except Exception as e:
         print_with_timestamp(f"\n[ERROR] Fatal Error: {e}")
         import traceback
         error_trace = traceback.format_exc()
         if conn:
-            log_import_activity(conn, 'scrape_class_nonplacing_results.py', action='ERROR', 
-                              error_detail=str(e), additional_info=error_trace[:4000])
+            try:
+                log_import_activity(conn, 'scrape_class_nonplacing_results.py', action='ERROR', 
+                                  error_detail=str(e), additional_info=error_trace[:4000])
+            except:
+                pass
         traceback.print_exc()
     finally:
         if conn:
@@ -1174,8 +1245,17 @@ def main(start_from_show_guid=None, sleep_short=0.5, sleep_medium=1):
             except:
                 pass
         if driver:
-            print_with_timestamp("\nClosing browser...")
-            driver.quit()
+            try:
+                print_with_timestamp("\nClosing browser...")
+                driver.quit()
+            except Exception as e:
+                print_with_timestamp(f"[WARNING] Error closing browser in finally: {e}")
+                # Try to force kill if normal quit fails
+                try:
+                    if hasattr(driver, 'service') and hasattr(driver.service, 'process'):
+                        driver.service.process.kill()
+                except:
+                    pass
 
 if __name__ == '__main__':
     import sys

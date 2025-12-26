@@ -6,6 +6,7 @@ SELECT [ID]
       ,[DivisionName]
       ,[Entries]
       ,[Placings]
+      ,[NonPlacingComplete]
       ,[CreatedDate]
       ,[UpdatedDate]
   FROM [HorseShows].[sResults].[ShowClass]
@@ -17,6 +18,7 @@ SELECT [ID]
   select * from [HorseShows].[sResults].[ShowClass] where id=9480
   select * from [HorseShows].[sResults].[ShowClass] where class='1'
   select * from [HorseShows].[sResults].[ShowClass] where class='01'
+  select * from [HorseShows].[sResults].[ShowClass] where nonplacingcomplete is not null
 
   select * from [HorseShows].[sResults].[ShowClass] where showlistid in (207,258,329,520,674) order by showlistid,class
 
