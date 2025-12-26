@@ -355,9 +355,6 @@ def extract_show_data_from_row(row_element, driver, base_url, column_map, year, 
             # Click on the row itself (not a specific cell) to navigate
             show_name = show_data.get('Show Name', 'Unknown')
             print(f"    Clicking row for '{show_name}' to get ShowGUID...")
-            if conn:
-                log_import_activity(conn, 'scrape_shows_by_year.py', action='NAVIGATE_TO_SHOW', 
-                                  additional_info=f'Year: {year}, Show: {show_name[:50]}, Extracting ShowGUID')
             
             # Store current URL and window handles
             original_handles = driver.window_handles
@@ -404,18 +401,12 @@ def extract_show_data_from_row(row_element, driver, base_url, column_map, year, 
             if 'ShowGUID' in params:
                 show_data['ShowGUID'] = params['ShowGUID'][0]
                 print(f"    [OK] Extracted ShowGUID: {show_data['ShowGUID']}")
-                if conn:
-                    log_import_activity(conn, 'scrape_shows_by_year.py', action='SHOWGUID_EXTRACTED', 
-                                      additional_info=f'Year: {year}, Show: {show_name[:50]}, ShowGUID: {show_data["ShowGUID"]}')
             else:
                 # Try regex pattern
                 guid_match = re.search(r'ShowGUID[=:]([a-fA-F0-9-]+)', current_url)
                 if guid_match:
                     show_data['ShowGUID'] = guid_match.group(1)
                     print(f"    [OK] Extracted ShowGUID (regex): {show_data['ShowGUID']}")
-                    if conn:
-                        log_import_activity(conn, 'scrape_shows_by_year.py', action='SHOWGUID_EXTRACTED', 
-                                          additional_info=f'Year: {year}, Show: {show_name[:50]}, ShowGUID: {show_data["ShowGUID"]} (regex)')
             
             # Navigate back to ShowSelector page with year selected
             if len(current_handles) > len(original_handles):
@@ -492,15 +483,8 @@ def extract_show_data_from_row(row_element, driver, base_url, column_map, year, 
         if conn:
             try:
                 save_single_show_to_database(show_data, conn)
-                # Log individual show save
-                log_import_activity(conn, 'scrape_shows_by_year.py', target_table='ShowList', 
-                                  action='INSERT_OR_UPDATE', row_count=1,
-                                  additional_info=f"ShowGUID: {show_data.get('ShowGUID', 'N/A')}, Year: {year}")
             except Exception as e:
                 print(f"    [WARNING] Failed to save show to database: {e}")
-                log_import_activity(conn, 'scrape_shows_by_year.py', target_table='ShowList', 
-                                  action='ERROR', error_detail=str(e),
-                                  additional_info=f"Show: {show_data.get('Show Name', 'Unknown')}, Year: {year}")
         
         return show_data
         
@@ -514,16 +498,8 @@ def scrape_shows_for_year(driver, year, conn=None):
     print(f"Scraping shows for year {year}")
     print(f"{'='*60}")
     
-    # Log year processing start
-    if conn:
-        log_import_activity(conn, 'scrape_shows_by_year.py', action='PROCESS_YEAR_START', 
-                          additional_info=f'Year: {year}')
-    
     if not select_year(driver, year):
         print(f"  [ERROR] Failed to select year {year}, skipping...")
-        if conn:
-            log_import_activity(conn, 'scrape_shows_by_year.py', action='ERROR', 
-                              error_detail=f'Failed to select year {year}')
         return []
     
     shows = []
@@ -570,15 +546,9 @@ def scrape_shows_for_year(driver, year, conn=None):
         
         if not grid:
             print(f"  [ERROR] Could not find grid for year {year}")
-            if conn:
-                log_import_activity(conn, 'scrape_shows_by_year.py', action='ERROR', 
-                                  error_detail=f'Could not find grid for year {year}')
             return []
         
         print(f"  Found grid, extracting rows...")
-        if conn:
-            log_import_activity(conn, 'scrape_shows_by_year.py', action='GRID_FOUND', 
-                              additional_info=f'Year: {year}')
         
         # Find all data rows (skip header and filter rows)
         # DevExpress GridView data rows typically have ID containing 'DataRow'
@@ -596,16 +566,10 @@ def scrape_shows_for_year(driver, year, conn=None):
                     rows.append(r)
         
         print(f"  Found {len(rows)} data rows")
-        if conn:
-            log_import_activity(conn, 'scrape_shows_by_year.py', action='GRID_ROWS_FOUND', 
-                              additional_info=f'Year: {year}, Rows found: {len(rows)}')
         
         # Determine column indices from header
         column_map = get_column_indices(grid)
         print(f"  Column mapping: {column_map}")
-        if conn:
-            log_import_activity(conn, 'scrape_shows_by_year.py', action='COLUMN_MAPPING', 
-                              additional_info=f'Year: {year}, Column mapping: {column_map}')
         
         # Debug: print first row structure if rows found
         if rows and len(rows) > 0:
@@ -660,10 +624,6 @@ def scrape_shows_for_year(driver, year, conn=None):
                     print(f"      ShowGUID: {show_data.get('ShowGUID', 'N/A')}")
                     if conn:
                         print(f"      [DB] Saved to database")
-                        # Log show extraction (save is already logged in extract_show_data_from_row)
-                        log_import_activity(conn, 'scrape_shows_by_year.py', action='EXTRACT_SHOW', 
-                                          target_table='ShowList',
-                                          additional_info=f'Year: {year}, Show: {show_data.get("Show Name", "N/A")[:50]}, ShowGUID: {show_data.get("ShowGUID", "N/A")}, Row {row_idx}/{total_rows}')
                 
                 # Move to next row
                 row_idx += 1
@@ -683,12 +643,6 @@ def scrape_shows_for_year(driver, year, conn=None):
                 continue
         
         print(f"  [OK] Extracted {len(shows)} shows for year {year}")
-        
-        # Log year processing completion
-        if conn:
-            log_import_activity(conn, 'scrape_shows_by_year.py', action='PROCESS_YEAR_COMPLETE', 
-                              target_table='ShowList', row_count=len(shows),
-                              additional_info=f'Year: {year}, Shows extracted: {len(shows)}')
         
     except Exception as e:
         print(f"  [ERROR] Error scraping year {year}: {e}")
@@ -734,84 +688,6 @@ def get_db_connection():
                 print(f"[ERROR] Database connection failed with all drivers: {e}")
                 raise
             continue
-
-def create_importlog_table_if_not_exists(conn):
-    """Create the ImportLog table if it doesn't exist"""
-    try:
-        cursor = conn.cursor()
-        
-        # Check if table exists
-        cursor.execute("""
-            SELECT COUNT(*) 
-            FROM INFORMATION_SCHEMA.TABLES 
-            WHERE TABLE_SCHEMA = 'sResults' AND TABLE_NAME = 'ImportLog'
-        """)
-        table_exists = cursor.fetchone()[0] > 0
-        
-        if not table_exists:
-            print("Creating sResults.ImportLog table...")
-            cursor.execute("""
-                CREATE TABLE sResults.ImportLog (
-                    ID INT IDENTITY(1,1) PRIMARY KEY,
-                    LogTimestamp DATETIME DEFAULT GETDATE(),
-                    OriginatingScript NVARCHAR(200) NOT NULL,
-                    TargetTable NVARCHAR(200),
-                    Action NVARCHAR(100) NOT NULL,
-                    [RowCount] INT,
-                    ErrorDetail NVARCHAR(MAX),
-                    AdditionalInfo NVARCHAR(MAX)
-                )
-            """)
-            
-            # Create indexes
-            cursor.execute("CREATE INDEX IX_ImportLog_Timestamp ON sResults.ImportLog(LogTimestamp)")
-            cursor.execute("CREATE INDEX IX_ImportLog_Script ON sResults.ImportLog(OriginatingScript)")
-            cursor.execute("CREATE INDEX IX_ImportLog_TargetTable ON sResults.ImportLog(TargetTable)")
-            
-            conn.commit()
-            print("[OK] ImportLog table created successfully")
-        else:
-            print("[OK] ImportLog table already exists")
-        
-        cursor.close()
-    except Exception as e:
-        print(f"[ERROR] Error creating ImportLog table: {e}")
-        raise
-
-def log_import_activity(conn, script_name, target_table=None, action='', row_count=None, error_detail=None, additional_info=None):
-    """Log import activity to ImportLog table
-    
-    Args:
-        conn: Database connection
-        script_name: Name of the originating script (e.g., 'scrape_shows_by_year.py')
-        target_table: Target table name (e.g., 'ShowList')
-        action: Action description (e.g., 'INSERT', 'UPDATE', 'START', 'COMPLETE', 'ERROR')
-        row_count: Number of rows affected
-        error_detail: Error message if any
-        additional_info: Additional information (JSON string or text)
-    """
-    if not conn:
-        return
-    
-    try:
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO sResults.ImportLog 
-            (OriginatingScript, TargetTable, Action, [RowCount], ErrorDetail, AdditionalInfo)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """,
-            script_name,
-            target_table,
-            action,
-            row_count,
-            error_detail,
-            additional_info
-        )
-        conn.commit()
-        cursor.close()
-    except Exception as e:
-        # Don't raise - logging failures shouldn't break the main process
-        print(f"[WARNING] Failed to log import activity: {e}")
 
 def create_table_if_not_exists(conn):
     """Create the ShowList table if it doesn't exist"""
@@ -1065,13 +941,8 @@ def main(years_arg=None):
             print("[OK] Connected to database")
             
             print("Ensuring database tables exist...")
-            create_importlog_table_if_not_exists(conn)
             create_table_if_not_exists(conn)
             print("[OK] Database tables verified/created")
-            
-            # Log script start
-            log_import_activity(conn, 'scrape_shows_by_year.py', action='START', 
-                              additional_info=f'Years: {years_str}, Total years: {len(years)}')
         except Exception as e:
             print(f"[WARNING] Could not connect to database: {e}")
             print("Will save to CSV only")
@@ -1087,15 +958,12 @@ def main(years_arg=None):
             return
         
         # Scrape each year (saves to database as each show is captured)
-        for year_idx, year in enumerate(years, 1):
+        for year in years:
             shows = scrape_shows_for_year(driver, year, conn)
             all_shows.extend(shows)
             
             # Report progress
             print(f"\n[PROGRESS] Total shows collected so far: {len(all_shows)}")
-            if conn:
-                log_import_activity(conn, 'scrape_shows_by_year.py', action='YEAR_PROGRESS', 
-                                  additional_info=f'Year {year_idx}/{len(years)}: {year}, Shows this year: {len(shows)}, Total so far: {len(all_shows)}')
             
             # Small delay between years
             time.sleep(2)
@@ -1119,17 +987,8 @@ def main(years_arg=None):
             count = len([s for s in all_shows if s.get('Year') == year])
             print(f"  Year {year}: {count} shows")
         
-        # Log completion
-        if conn:
-            summary_info = ', '.join([f"{year}: {len([s for s in all_shows if s.get('Year') == year])}" for year in years])
-            log_import_activity(conn, 'scrape_shows_by_year.py', action='COMPLETE', 
-                              row_count=len(all_shows), additional_info=f'Total shows: {len(all_shows)}, Summary: {summary_info}')
-        
     except KeyboardInterrupt:
         print("\n\n[WARNING] Scraping interrupted by user")
-        if conn:
-            log_import_activity(conn, 'scrape_shows_by_year.py', action='INTERRUPTED', 
-                              error_detail='User interrupted scraping', row_count=len(all_shows) if all_shows else 0)
         if all_shows:
             # Try to save to database
             try:
@@ -1143,10 +1002,6 @@ def main(years_arg=None):
     except Exception as e:
         print(f"\n[ERROR] Fatal Error: {e}")
         import traceback
-        error_trace = traceback.format_exc()
-        if conn:
-            log_import_activity(conn, 'scrape_shows_by_year.py', action='ERROR', 
-                              error_detail=str(e), additional_info=error_trace[:4000], row_count=len(all_shows) if all_shows else 0)
         traceback.print_exc()
         if all_shows:
             # Try to save to database
