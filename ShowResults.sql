@@ -22,14 +22,15 @@ SELECT [ID]
   --WHERE ClassName LIKE 'WARM UP 2% (SPECIAL HUNTERS ONLY)'
   --WHERE ShowName='UPHA AMERICAN ROYAL NATIONAL CHAMPIONSHIP' AND Year=2025 AND ClassName LIKE '%exceptional%'
   WHERE Year=2025 AND ShowName in ('ST. LOUIS NATIONAL CHARITY FALL KICK OFF HORSE SHO','MONARCH SERIES CHAMPIONSHIP HORSE SHOW','MISSOURI STATE FAIR','HERE COMES THE BOOM I & II','BRIDLESPUR HORSE SHOW')
-  WHERE Trainer='WILCOX, HILARY'
-  WHERE Rider LIKE '%Waelterman%'
+  --WHERE Trainer='WILCOX, HILARY' OR Trainer LIKE '%RED%WING FARM%'
+  WHERE Rider LIKE '%Wa%lterman%'
   --WHERE Rider LIKE '%Brynlee%'
-  WHERE Rider LIKE '%Totterdale%'
+  --WHERE Rider LIKE '%Totterdale%'
 
   select * from [sResults].[vwResults] where place is null
   select * from [sResults].[vwResults] where showlocation like '%NATIONAL EQUESTRIAN CENTER%'
-  select max(prize) from [sResults].[vwResults]
+  select max(prize) from [HorseShows].[sResults].[ShowResults] where prize is not null
+  select * from [HorseShows].[sResults].[ShowResults] where try_cast(prize as money)>0 order by prize desc
   select rider,count(*) from [sResults].[vwResults] group by rider order by count(*) desc
 
   SELECT s.[Year]
