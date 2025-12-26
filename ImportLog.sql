@@ -1,0 +1,10 @@
+SELECT  [ID]
+      ,[LogTimestamp]
+      ,[OriginatingScript]
+      ,[TargetTable]
+      ,[Action]
+      ,[RowCount]
+      ,[ErrorDetail]
+      ,[AdditionalInfo]
+  FROM [HorseShows].[sResults].[ImportLog]
+  ORDER BY LogTimestamp DESC

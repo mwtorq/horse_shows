@@ -18,9 +18,15 @@ SELECT [ID]
   FROM [HorseShows].[sResults].[ShowResults]
 
   select * from [sResults].[vwResults]
-  --WHERE Trainer='WILCOX, HILARY'
+  --WHERE Year=2025 AND ShowName in ('ST. LOUIS NATIONAL CHARITY FALL KICK OFF HORSE SHO','MONARCH SERIES CHAMPIONSHIP HORSE SHOW','MISSOURI STATE FAIR','HERE COMES THE BOOM I & II','BRIDLESPUR HORSE SHOW')
+  WHERE Trainer='WILCOX, HILARY'
   --WHERE Rider LIKE '%Brynlee%'
-  --WHERE Rider LIKE '%Totterdale%'
+  WHERE Rider LIKE '%Totterdale%'
+
+  select * from [sResults].[vwResults] where place is null
+  select * from [sResults].[vwResults] where showlocation like '%NATIONAL EQUESTRIAN CENTER%'
+  select max(prize) from [sResults].[vwResults]
+  select rider,count(*) from [sResults].[vwResults] group by rider order by count(*) desc
 
   SELECT s.[Year]
       ,s.[ShowName]
@@ -51,5 +57,9 @@ SELECT [ID]
   select * from [HorseShows].[sResults].[ShowResults] where trainerid=3631
   select * from [HorseShows].[sResults].[ShowResults] where riderid in (3630,3734,4035,4124,4230,4234)
   select * from [HorseShows].[sResults].[ShowResults] where showclassid in (select id from [HorseShows].[sResults].[ShowClass] where showlistid=25)
+  select * from [HorseShows].[sResults].[ShowResults] where place is null
 
   --delete [HorseShows].[sResults].[ShowResults]
+  --delete [HorseShows].[sResults].[ShowResults] where place=0
+  --delete [HorseShows].[sResults].[ShowResults] where place is null
+  --update [HorseShows].[sResults].[ShowResults] set addback='$0.00' where addback='0.00'
