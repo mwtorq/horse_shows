@@ -3883,19 +3883,34 @@ def main(skip_processed=True, load_missing_classes=False, start_from_show_guid=N
                 # When loading a single show with --show-guid, always only load classes where results are missing
                 incomplete_class_ids = None
                 if single_show_guid:
-                    # Always check for incomplete classes when using --show-guid
-                    # This ensures we only process classes with missing results
-                    print_with_timestamp(f"  Checking for classes with missing results...")
-                    incomplete_class_ids = get_incomplete_classes_for_show(conn, show_list_id, skip_processed=True)
+                    # First check if any classes exist for this show
+                    cursor_check = conn.cursor()
+                    cursor_check.execute("""
+                        SELECT COUNT(*) 
+                        FROM sResults.ShowClass 
+                        WHERE ShowListID = ?
+                    """, show_list_id)
+                    total_classes = cursor_check.fetchone()[0]
+                    cursor_check.close()
                     
-                    if incomplete_class_ids:
-                        print_with_timestamp(f"  [RESUME] Found {len(incomplete_class_ids)} classes with missing results")
-                        print_with_timestamp(f"  [RESUME] Will process only classes with missing results (skipping already completed classes)")
+                    if total_classes == 0:
+                        # No classes loaded yet - need to run PASS 1 to load classes
+                        print_with_timestamp(f"  [INFO] No classes found in database for this show")
+                        print_with_timestamp(f"  [INFO] Will load classes from website (PASS 1) and then collect results")
+                        # incomplete_class_ids remains None, so PASS 1 will run
                     else:
-                        # All classes are complete
-                        print_with_timestamp(f"  [INFO] All classes have complete results. No missing results to process.")
-                        print_with_timestamp(f"  Skipping show (all classes complete)")
-                        continue
+                        # Classes exist - check for incomplete classes
+                        print_with_timestamp(f"  Checking for classes with missing results...")
+                        incomplete_class_ids = get_incomplete_classes_for_show(conn, show_list_id, skip_processed=True)
+                        
+                        if incomplete_class_ids:
+                            print_with_timestamp(f"  [RESUME] Found {len(incomplete_class_ids)} classes with missing results")
+                            print_with_timestamp(f"  [RESUME] Will process only classes with missing results (skipping already completed classes)")
+                        else:
+                            # All classes are complete
+                            print_with_timestamp(f"  [INFO] All {total_classes} classes have complete results. No missing results to process.")
+                            print_with_timestamp(f"  Skipping show (all classes complete)")
+                            continue
                 
                 # Pass incomplete_class_ids to scrape function to resume from where left off
                 results_count, driver = scrape_class_results_for_show(
