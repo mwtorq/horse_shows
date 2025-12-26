@@ -15,6 +15,7 @@ SELECT [ID]
   select * from [HorseShows].[sResults].[ShowClass] where showlistid=258
   select * from [HorseShows].[sResults].[ShowClass] where showlistid=7
   select * from [HorseShows].[sResults].[ShowClass] where showlistid=13
+  select * from [HorseShows].[sResults].[ShowClass] where showlistid=9
   select * from [HorseShows].[sResults].[ShowClass] where showlistid=7 and placings>0 and id not in (select showclassid from [HorseShows].[sResults].[ShowResults])
   select * from [HorseShows].[sResults].[ShowClass] where id=9480
   select * from [HorseShows].[sResults].[ShowClass] where class='1'
