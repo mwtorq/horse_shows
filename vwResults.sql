@@ -30,4 +30,5 @@ CREATE OR ALTER VIEW [sResults].[vwResults] AS
   LEFT JOIN [HorseShows].[sResults].[Competitors] c ON r.RiderID=c.ID
   LEFT JOIN [HorseShows].[sResults].[Competitors] o ON h.OwnerID=o.ID
   LEFT JOIN [HorseShows].[sResults].[Competitors] tr ON r.TrainerID=tr.ID
-  ORDER BY CAST(s.StartDate AS DATE) DESC,s.ShowName,CASE WHEN LEN(cl.Class)=1 THEN '0000' + cl.Class WHEN LEN(cl.Class)=2 THEN '000' + cl.Class WHEN LEN(cl.Class)=3 THEN '00' + cl.Class WHEN LEN(cl.Class)=4 THEN '0' + cl.Class ELSE cl.Class END,r.Place
+  --ORDER BY CAST(s.StartDate AS DATE) DESC,s.ShowName,CASE WHEN LEN(cl.Class)=1 THEN '00000' + cl.Class WHEN LEN(cl.Class)=2 THEN '0000' + cl.Class WHEN LEN(cl.Class)=3 THEN '000' + cl.Class WHEN LEN(cl.Class)=4 THEN '00' + cl.Class WHEN LEN(cl.Class)=5 THEN '0' + cl.Class ELSE cl.Class END,r.Place
+  ORDER BY CAST(s.StartDate AS DATE) DESC,s.ShowName,TRY_CAST(cl.Class AS FLOAT),r.Place
