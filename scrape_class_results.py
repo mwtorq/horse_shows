@@ -1958,6 +1958,9 @@ def find_and_click_show_row(driver, show_guid, year, show_name, sleep_medium=3):
         # Find the row with matching Show Name
         # Column structure: 0=Command, 1=Date, 2=Name, 3=Location, 4=State, 5=Body
         target_row_index = None
+        exact_match_index = None
+        partial_matches = []  # Store (index, row_show_name) for partial matches
+        
         for idx, row in enumerate(rows):
             try:
                 cells = row.find_elements(By.TAG_NAME, "td")
@@ -1966,11 +1969,15 @@ def find_and_click_show_row(driver, show_guid, year, show_name, sleep_medium=3):
                     show_name_cell = cells[2] if len(cells) > 2 else cells[1]
                     row_show_name = show_name_cell.text.strip()
                     
-                    # Match by Show Name (case-insensitive partial match)
-                    if show_name and show_name.lower() in row_show_name.lower():
+                    # Try exact match first (case-insensitive)
+                    if show_name and show_name.lower() == row_show_name.lower():
+                        exact_match_index = idx
                         target_row_index = idx
-                        print_with_timestamp(f"  Found matching show row: {row_show_name}")
+                        print_with_timestamp(f"  Found exact matching show row: {row_show_name}")
                         break
+                    # Store partial matches for fallback
+                    elif show_name and show_name.lower() in row_show_name.lower():
+                        partial_matches.append((idx, row_show_name))
             except StaleElementReferenceException:
                 # Re-find rows if they become stale
                 rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
@@ -1985,6 +1992,15 @@ def find_and_click_show_row(driver, show_guid, year, show_name, sleep_medium=3):
                 continue
             except Exception as e:
                 continue
+        
+        # If no exact match, try to find the best partial match
+        # Prefer matches where the show_name length is closer to the row_show_name length
+        if target_row_index is None and partial_matches:
+            # Sort by length difference (prefer shorter differences)
+            partial_matches.sort(key=lambda x: abs(len(x[1]) - len(show_name)))
+            # Use the first (best) match
+            target_row_index = partial_matches[0][0]
+            print_with_timestamp(f"  Found partial matching show row: {partial_matches[0][1]} (no exact match found)")
         
         if target_row_index is not None:
             try:
@@ -2008,6 +2024,17 @@ def find_and_click_show_row(driver, show_guid, year, show_name, sleep_medium=3):
                         clickable_cell = cells[2]  # Show Name cell
                         driver.execute_script("arguments[0].click();", clickable_cell)
                         time.sleep(sleep_medium)  # Wait for navigation to ShowDetails page
+                        
+                        # Verify we're on the correct page by checking URL contains ShowGUID
+                        current_url = driver.current_url
+                        if show_guid.lower() in current_url.lower():
+                            print_with_timestamp(f"  [OK] Verified correct show page (ShowGUID in URL)")
+                        else:
+                            print_with_timestamp(f"  [WARNING] ShowGUID not found in URL after click, using direct navigation")
+                            class_results_url = f'https://horseshowsonline.com/ClassResults?ShowGUID={show_guid}'
+                            driver.get(class_results_url)
+                            time.sleep(sleep_medium)
+                            return True
                         
                         # Now click the ClassResults tab on the ShowDetails page
                         if activate_class_results_tab(driver):
@@ -3659,15 +3686,34 @@ def main(skip_processed=True, load_missing_classes=False, start_from_show_guid=N
     except KeyboardInterrupt:
         print_with_timestamp("\n\n[WARNING] Scraping interrupted by user")
         if conn:
-            log_import_activity(conn, 'scrape_class_results.py', action='INTERRUPTED', 
-                              error_detail='User interrupted scraping')
+            try:
+                log_import_activity(conn, 'scrape_class_results.py', action='INTERRUPTED', 
+                                  error_detail='User interrupted scraping')
+            except:
+                pass
+        # Explicitly terminate browser on interrupt
+        if driver:
+            try:
+                print_with_timestamp("\nTerminating browser session...")
+                driver.quit()
+            except Exception as e:
+                print_with_timestamp(f"[WARNING] Error terminating browser: {e}")
+                # Try to force kill if normal quit fails
+                try:
+                    if hasattr(driver, 'service') and hasattr(driver.service, 'process'):
+                        driver.service.process.kill()
+                except:
+                    pass
     except Exception as e:
         print_with_timestamp(f"\n[ERROR] Fatal Error: {e}")
         import traceback
         error_trace = traceback.format_exc()
         if conn:
-            log_import_activity(conn, 'scrape_class_results.py', action='ERROR', 
-                              error_detail=str(e), additional_info=error_trace[:4000])  # Limit to 4000 chars
+            try:
+                log_import_activity(conn, 'scrape_class_results.py', action='ERROR', 
+                                  error_detail=str(e), additional_info=error_trace[:4000])  # Limit to 4000 chars
+            except:
+                pass
         traceback.print_exc()
     finally:
         if conn:
@@ -3677,8 +3723,17 @@ def main(skip_processed=True, load_missing_classes=False, start_from_show_guid=N
             except:
                 pass
         if driver:
-            print_with_timestamp("\nClosing browser...")
-            driver.quit()
+            try:
+                print_with_timestamp("\nClosing browser...")
+                driver.quit()
+            except Exception as e:
+                print_with_timestamp(f"[WARNING] Error closing browser in finally: {e}")
+                # Try to force kill if normal quit fails
+                try:
+                    if hasattr(driver, 'service') and hasattr(driver.service, 'process'):
+                        driver.service.process.kill()
+                except:
+                    pass
 
 if __name__ == '__main__':
     import sys
