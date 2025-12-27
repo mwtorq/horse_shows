@@ -268,6 +268,9 @@ def create_competitors_table_if_not_exists(conn):
                 CREATE TABLE sResults.Competitors (
                     ID INT IDENTITY(1,1) PRIMARY KEY,
                     Rider NVARCHAR(500),
+                    RiderUSEFID NVARCHAR(50),
+                    RiderState NVARCHAR(10),
+                    RiderUSEFStatus NVARCHAR(500),
                     Owner NVARCHAR(500),
                     Trainer NVARCHAR(500),
                     CreatedDate DATETIME DEFAULT GETDATE(),
@@ -284,6 +287,32 @@ def create_competitors_table_if_not_exists(conn):
             print_with_timestamp("[OK] Competitors table created successfully")
         else:
             print_with_timestamp("[OK] Competitors table already exists")
+            
+            # Check if new columns exist, add them if not
+            cursor.execute("""
+                SELECT COUNT(*) 
+                FROM INFORMATION_SCHEMA.COLUMNS 
+                WHERE TABLE_SCHEMA = 'sResults' 
+                AND TABLE_NAME = 'Competitors' 
+                AND COLUMN_NAME = 'RiderUSEFID'
+            """)
+            has_rider_usef_id = cursor.fetchone()[0] > 0
+            
+            if not has_rider_usef_id:
+                print_with_timestamp("Adding RiderUSEFID, RiderState, and RiderUSEFStatus columns to Competitors table...")
+                try:
+                    # Add columns after Rider column (need to use ALTER TABLE ADD)
+                    cursor.execute("""
+                        ALTER TABLE sResults.Competitors 
+                        ADD RiderUSEFID NVARCHAR(50),
+                            RiderState NVARCHAR(10),
+                            RiderUSEFStatus NVARCHAR(500)
+                    """)
+                    conn.commit()
+                    print_with_timestamp("[OK] Added RiderUSEFID, RiderState, and RiderUSEFStatus columns")
+                except Exception as e:
+                    print_with_timestamp(f"[WARNING] Error adding new columns: {e}")
+            
             # Reseed identity if table is empty
             reseed_identity_if_empty(conn, 'sResults', 'Competitors', 'ID')
         
