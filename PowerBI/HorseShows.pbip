@@ -1,0 +1,15 @@
+{
+  "version": "1.0",
+  "artifacts": [
+    {
+      "report": {
+        "path": "HorseShows.Report"
+      }
+    },
+    {
+      "report": {
+        "path": "HorseShows.SemanticModel"
+      }
+    }
+  ]
+}

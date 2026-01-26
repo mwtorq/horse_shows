@@ -1,0 +1,4 @@
+# Ignore PowerShell files for Python linting
+*.ps1
+
+

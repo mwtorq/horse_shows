@@ -13,7 +13,7 @@ CREATE OR ALTER VIEW [sResults].[vwResults] AS
       ,CASE WHEN r.[Entry] IS NULL THEN 'No entries' ELSE r.[Entry] END AS Entry
       ,CASE WHEN r.[Start] IS NULL THEN 'No entries' ELSE r.[Start] END AS Start
       ,CASE WHEN r.[Place] IS NULL THEN 'No entries' ELSE CASE WHEN CAST(r.[Place] AS VARCHAR(10))='0' THEN 'DNP' ELSE CAST(r.[Place] AS VARCHAR(10)) END + ' out of ' + CAST(cl.[Entries] AS VARCHAR(10)) END AS Place
-      ,CASE WHEN c.[Rider] IS NULL THEN 'No entries' ELSE c.[Rider] END AS Rider
+      ,CASE WHEN c.[Rider] IS NULL THEN 'No entries' ELSE c.[Rider] + CASE WHEN c.[RiderUSEFID] IS NOT NULL THEN ' (' + c.[RiderUSEFID] + ')' ELSE '' END END AS Rider
       ,CASE WHEN h.[HorseName] IS NULL THEN 'No entries' ELSE h.[HorseName] END AS HorseName
       ,CASE WHEN o.[Owner] IS NULL THEN 'No entries' ELSE o.[Owner] END AS Owner
       ,CASE WHEN tr.[Trainer] IS NULL THEN 'No entries' ELSE tr.[Trainer] END AS Trainer
