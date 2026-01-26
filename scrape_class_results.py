@@ -14,6 +14,8 @@ from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
 import time
 import pyodbc
+import getpass
+import socket
 from datetime import datetime
 
 def print_with_timestamp(message, end='\n'):
@@ -38,8 +40,8 @@ def print_with_timestamp(message, end='\n'):
         print(f"[{timestamp}] {remaining_message}", end=end)
     else:
         print(f"[{timestamp}] {message}", end=end)
-def reconnect_browser_and_navigate(driver, show_guid, year, show_name, current_url_hint=None, sleep_short=2, sleep_medium=3, sleep_long=5):
-    """Reconnect browser and navigate back to ClassResults page
+def reconnect_browser_and_navigate(driver, show_guid, year, show_name, current_url_hint=None, sleep_short=0.3, sleep_medium=0.5, sleep_long=1):
+    """Reconnect browser and navigate back to ClassResults page (optimized for speed)
     
     Args:
         driver: Current WebDriver instance (will be quit and replaced)
@@ -47,9 +49,9 @@ def reconnect_browser_and_navigate(driver, show_guid, year, show_name, current_u
         year: Year for navigation context
         show_name: Show name for navigation context
         current_url_hint: Optional hint about what URL we were on
-        sleep_short: Short sleep duration in seconds (default: 2)
-        sleep_medium: Medium sleep duration in seconds (default: 3)
-        sleep_long: Long sleep duration in seconds (default: 5)
+        sleep_short: Short sleep duration in seconds (default: 0.3, optimized for speed)
+        sleep_medium: Medium sleep duration in seconds (default: 0.5, optimized for speed)
+        sleep_long: Long sleep duration in seconds (default: 1, optimized for speed)
     
     Returns:
         New WebDriver instance, or None if reconnection failed
@@ -63,61 +65,89 @@ def reconnect_browser_and_navigate(driver, show_guid, year, show_name, current_u
         except:
             pass
         
-        # Wait a moment
+        # Minimal wait
         time.sleep(sleep_short)
         
         # Create new browser instance
         print_with_timestamp(f"      [RECONNECT] Creating new browser connection...")
         new_driver = setup_driver(headless=True)
         
-        # Navigate back to ClassResults page using the same flow as find_and_click_show_row
-        print_with_timestamp(f"      [RECONNECT] Navigating to ClassResults page...")
+        # Navigate back to ClassResults page using ShowSelector (required)
+        print_with_timestamp(f"      [RECONNECT] Navigating to ShowSelector page...")
         show_selector_url = 'https://horseshowsonline.com/ShowSelector.aspx'
         new_driver.get(show_selector_url)
-        time.sleep(sleep_medium)
         
-        # Activate Shows By Year tab
-        if not activate_shows_by_year_tab(new_driver):
+        # Wait for page to load minimally
+        try:
+            WebDriverWait(new_driver, 5).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "li.dxtc-tab, table[id*='grMaster']"))
+            )
+        except:
+            time.sleep(sleep_medium)  # Fallback minimal wait
+        
+        # Activate Shows By Year tab (optimized - reduced sleeps)
+        print_with_timestamp(f"      [RECONNECT] Activating 'Shows By Year' tab...")
+        if not activate_shows_by_year_tab(new_driver, sleep_medium=0.5, sleep_short=0.2):
             print_with_timestamp(f"      [RECONNECT] Warning: Failed to activate 'Shows By Year' tab, trying direct navigation")
             class_results_url = f'https://horseshowsonline.com/ClassResults?ShowGUID={show_guid}'
             new_driver.get(class_results_url)
-            time.sleep(sleep_long)
+            # Wait for grid with WebDriverWait instead of fixed sleep
+            try:
+                WebDriverWait(new_driver, 6).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "table[id*='grMaster'], table.dxgvTable"))
+                )
+            except:
+                time.sleep(sleep_long)  # Fallback wait
         else:
-            # Select the year
-            if not select_year(new_driver, year):
+            # Select the year (optimized - reduced sleeps)
+            print_with_timestamp(f"      [RECONNECT] Selecting year {year}...")
+            if not select_year(new_driver, year, sleep_short=0.5, sleep_medium=0.8):
                 print_with_timestamp(f"      [RECONNECT] Warning: Failed to select year {year}, trying direct navigation")
                 class_results_url = f'https://horseshowsonline.com/ClassResults?ShowGUID={show_guid}'
                 new_driver.get(class_results_url)
-                time.sleep(sleep_long)
+                # Wait for grid with WebDriverWait instead of fixed sleep
+                try:
+                    WebDriverWait(new_driver, 6).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "table[id*='grMaster'], table.dxgvTable"))
+                    )
+                except:
+                    time.sleep(sleep_long)  # Fallback wait
             else:
-                # Find and click the show row to navigate to ClassResults (same as normal flow)
-                if not find_and_click_show_row(new_driver, show_guid, year, show_name):
+                # Find and click the show row (optimized - reduced sleeps)
+                print_with_timestamp(f"      [RECONNECT] Finding and clicking show row...")
+                if not find_and_click_show_row(new_driver, show_guid, year, show_name, sleep_medium=1):
                     print_with_timestamp(f"      [RECONNECT] Warning: Failed to find show row, trying direct navigation")
                     class_results_url = f'https://horseshowsonline.com/ClassResults?ShowGUID={show_guid}'
                     new_driver.get(class_results_url)
-                    time.sleep(sleep_long)
+                    # Wait for grid with WebDriverWait instead of fixed sleep
+                    try:
+                        WebDriverWait(new_driver, 6).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, "table[id*='grMaster'], table.dxgvTable"))
+                        )
+                    except:
+                        time.sleep(sleep_long)  # Fallback wait
         
-        # Wait for grid to load with longer timeout
+        # Wait for grid to load with optimized timeout
         try:
-            WebDriverWait(new_driver, 15).until(
+            print_with_timestamp(f"      [RECONNECT] Waiting for grid table to load...")
+            WebDriverWait(new_driver, 8).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']"))
             )
             print_with_timestamp(f"      [RECONNECT] Grid table found")
         except TimeoutException:
-            print_with_timestamp(f"      [RECONNECT] Warning: Grid table not found after 15 seconds, but continuing...")
-            # Try one more time with a direct navigation
+            print_with_timestamp(f"      [RECONNECT] Warning: Grid table not found after 8 seconds, retrying...")
+            # Retry once with a fresh navigation
             try:
                 class_results_url = f'https://horseshowsonline.com/ClassResults?ShowGUID={show_guid}'
                 new_driver.get(class_results_url)
-                time.sleep(sleep_long)
-                WebDriverWait(new_driver, 10).until(
+                WebDriverWait(new_driver, 6).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']"))
                 )
-                print_with_timestamp(f"      [RECONNECT] Grid table found after direct navigation")
+                print_with_timestamp(f"      [RECONNECT] Grid table found after retry")
             except:
-                print_with_timestamp(f"      [RECONNECT] Warning: Grid table still not found after direct navigation")
+                print_with_timestamp(f"      [RECONNECT] Warning: Grid table still not found, but continuing...")
         
-        time.sleep(sleep_short)  # Additional wait for JavaScript
+        time.sleep(sleep_short)  # Minimal additional wait for JavaScript
         
         print_with_timestamp(f"      [RECONNECT] Browser reconnected successfully")
         return new_driver
@@ -128,43 +158,68 @@ def reconnect_browser_and_navigate(driver, show_guid, year, show_name, current_u
         traceback.print_exc()
         return None
 
-def retry_on_stale_element(operation_func, max_retries=3, delay=0.5, reconnect_func=None, *args, **kwargs):
+def retry_on_stale_element(operation_func, max_retries=3, delay=0.1, reconnect_func=None, max_total_time=20, operation_name="operation", *args, **kwargs):
     """Helper function to retry an operation on StaleElementReferenceException
     
     Args:
         operation_func: Function to execute that may throw StaleElementReferenceException
         max_retries: Maximum number of retry attempts (default: 3)
-        delay: Delay between retries in seconds (default: 0.5)
-        reconnect_func: Optional function to reconnect browser. If provided and stale element persists,
-                       will call this function before final retry attempts. Function should return new driver or None.
+        delay: Delay between retries in seconds (default: 0.1, very fast)
+        reconnect_func: Optional function to reconnect browser. Called early if time limit exceeded.
+        max_total_time: Maximum total time in seconds before forcing reconnection (default: 20)
+        operation_name: Name of operation for logging (default: "operation")
         *args, **kwargs: Arguments to pass to operation_func
     
     Returns:
         Result of operation_func, or None if all retries failed
     """
+    import time as time_module
+    start_time = time_module.time()
     last_exception = None
+    
     for attempt in range(max_retries):
         try:
+            if attempt > 0:
+                elapsed = time_module.time() - start_time
+                print_with_timestamp(f"      [RETRY] Attempt {attempt + 1}/{max_retries} for {operation_name} (elapsed: {elapsed:.1f}s)...")
             return operation_func(*args, **kwargs)
         except StaleElementReferenceException as e:
             last_exception = e
+            elapsed_time = time_module.time() - start_time
+            
+            # If we've exceeded the time limit, try reconnection immediately
+            if reconnect_func and elapsed_time >= max_total_time:
+                print_with_timestamp(f"      [RETRY] {operation_name} timeout ({elapsed_time:.1f}s >= {max_total_time}s), attempting browser reconnection...")
+                new_driver = reconnect_func()
+                if new_driver:
+                    if 'driver' in kwargs:
+                        kwargs['driver'] = new_driver
+                    print_with_timestamp(f"      [RETRY] Browser reconnected, retrying {operation_name}...")
+                    time.sleep(delay * 2)
+                    start_time = time_module.time()  # Reset timer after reconnect
+                    continue
+            
             if attempt < max_retries - 1:
-                # If we're more than halfway through retries and have reconnect_func, try reconnecting
-                if reconnect_func and attempt >= (max_retries // 2) and attempt < max_retries - 1:
-                    print_with_timestamp(f"      [RETRY] Stale element on attempt {attempt + 1}/{max_retries}, attempting browser reconnection...")
+                # Try reconnection early (on second attempt) if we're getting persistent stale elements
+                if reconnect_func and attempt == 1 and elapsed_time >= 5:  # After 5 seconds, try reconnection
+                    print_with_timestamp(f"      [RETRY] {operation_name} stale element persists after {attempt + 1} attempts ({elapsed_time:.1f}s), attempting browser reconnection...")
                     new_driver = reconnect_func()
                     if new_driver:
-                        # Update driver in kwargs if present
                         if 'driver' in kwargs:
                             kwargs['driver'] = new_driver
-                        # Also check if operation_func's closure has driver
-                        time.sleep(delay * 2)  # Longer delay after reconnect
+                        print_with_timestamp(f"      [RETRY] Browser reconnected, retrying {operation_name}...")
+                        time.sleep(delay * 2)
+                        start_time = time_module.time()  # Reset timer after reconnect
                         continue
                 else:
+                    # Fast retry with minimal delay
+                    print_with_timestamp(f"      [RETRY] Stale element on {operation_name}, retrying in {delay}s (attempt {attempt + 1}/{max_retries}, elapsed: {elapsed_time:.1f}s)...")
                     time.sleep(delay)
                     continue
             else:
-                # Last attempt failed, return None or re-raise based on context
+                # Last attempt failed, return None
+                elapsed_time = time_module.time() - start_time
+                print_with_timestamp(f"      [RETRY] {operation_name} failed after {max_retries} attempts ({elapsed_time:.1f}s)")
                 return None
         except Exception as e:
             # Don't retry on other exceptions, re-raise immediately
@@ -200,6 +255,16 @@ def setup_driver(headless=True):
 
 def get_db_connection():
     """Get SQL Server database connection"""
+    # Check if running on LDAHSAR - use Windows authentication if so
+    hostname = socket.gethostname().upper()
+    use_windows_auth = (hostname == 'LDAHSAR')
+    
+    if use_windows_auth:
+        print_with_timestamp(f"[INFO] Running on {hostname}, using Windows authentication")
+    else:
+        # Prompt for password for sa user on other machines
+        password = getpass.getpass("Enter SQL Server password for sa user: ")
+    
     drivers = [
         'ODBC Driver 17 for SQL Server',
         'ODBC Driver 18 for SQL Server',
@@ -209,9 +274,16 @@ def get_db_connection():
     
     for driver in drivers:
         try:
-            conn_str = f'DRIVER={{{driver}}};SERVER=localhost\\SQLEXPRESS;DATABASE=HorseShows;Trusted_Connection=yes;'
+            if use_windows_auth:
+                # Use Windows authentication (Trusted Connection)
+                conn_str = f'DRIVER={{{driver}}};SERVER=LDAHSAR\\SQLEXPRESS;DATABASE=HorseShows;Trusted_Connection=yes;'
+            else:
+                # Use SQL Server authentication with sa user
+                conn_str = f'DRIVER={{{driver}}};SERVER=LDAHSAR\\SQLEXPRESS;DATABASE=HorseShows;UID=sa;PWD={password};'
+            
             conn = pyodbc.connect(conn_str)
-            print_with_timestamp(f"[OK] Connected to HorseShows database using driver: {driver}")
+            auth_method = "Windows authentication" if use_windows_auth else "SQL Server authentication (sa)"
+            print_with_timestamp(f"[OK] Connected to HorseShows database using driver: {driver} ({auth_method})")
             return conn
         except Exception as e:
             if driver == drivers[-1]:  # Last driver
@@ -748,7 +820,7 @@ def get_or_create_competitor_by_role(conn, name, role_type):
     finally:
         cursor.close()
 
-def activate_shows_by_year_tab(driver, sleep_medium=3, sleep_short=0.5):
+def activate_shows_by_year_tab(driver, sleep_medium=0.5, sleep_short=0.2):
     """Activate the 'Shows By Year' tab
     
     Args:
@@ -759,7 +831,13 @@ def activate_shows_by_year_tab(driver, sleep_medium=3, sleep_short=0.5):
     print_with_timestamp("Activating 'Shows By Year' tab...")
     
     try:
-        time.sleep(sleep_medium)
+        # Reduced initial wait - use WebDriverWait instead
+        try:
+            WebDriverWait(driver, 3).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "li.dxtc-tab"))
+            )
+        except:
+            time.sleep(sleep_medium)
         
         # Try multiple methods to find the tab
         shows_by_year_tab = None
@@ -885,7 +963,7 @@ def activate_shows_by_year_tab(driver, sleep_medium=3, sleep_short=0.5):
         traceback.print_exc()
         return False
 
-def activate_class_results_tab(driver, sleep_short=2, sleep_medium=3):
+def activate_class_results_tab(driver, sleep_short=0.5, sleep_medium=1):
     """Activate the 'Class Results' tab on ShowDetails page
     
     Args:
@@ -896,7 +974,13 @@ def activate_class_results_tab(driver, sleep_short=2, sleep_medium=3):
     print_with_timestamp("  Activating 'Class Results' tab...")
     
     try:
-        time.sleep(sleep_short)
+        # Reduced initial wait - use WebDriverWait instead
+        try:
+            WebDriverWait(driver, 2).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "li.dxtc-tab"))
+            )
+        except:
+            time.sleep(sleep_short)
         tabs = driver.find_elements(By.CSS_SELECTOR, "li.dxtc-tab")
         
         class_results_tab = None
@@ -937,7 +1021,7 @@ def activate_class_results_tab(driver, sleep_short=2, sleep_medium=3):
         print_with_timestamp(f"  [WARNING] Error activating Class Results tab: {e}")
         return False
 
-def select_year(driver, year, sleep_short=2, sleep_medium=3):
+def select_year(driver, year, sleep_short=0.5, sleep_medium=0.8):
     """Select a specific year in the year picker
     
     Args:
@@ -949,7 +1033,13 @@ def select_year(driver, year, sleep_short=2, sleep_medium=3):
     print_with_timestamp(f"\nSelecting year {year}...")
     
     try:
-        time.sleep(sleep_short)
+        # Reduced initial wait - use WebDriverWait instead
+        try:
+            WebDriverWait(driver, 2).until(
+                EC.presence_of_element_located((By.ID, "MainContent_panFilter_ddShowYear_I"))
+            )
+        except:
+            time.sleep(sleep_short)
         
         # Find the year picker element
         year_element = None
@@ -996,8 +1086,16 @@ def select_year(driver, year, sleep_short=2, sleep_medium=3):
             }}
         """, year_element)
         
-        # Wait for grid to update
+        # Wait for grid to update (reduced wait)
         time.sleep(sleep_medium)
+        
+        # Use WebDriverWait to check if grid has updated instead of fixed sleep
+        try:
+            WebDriverWait(driver, 2).until(
+                lambda d: d.find_element(By.ID, picker_id).get_attribute('value') == str(year)
+            )
+        except:
+            pass  # Continue even if wait fails
         
         # Verify the value was set
         current_value = driver.execute_script("return arguments[0].value;", year_element)
@@ -1243,16 +1341,32 @@ def get_shows_with_missing_classes(conn, start_from_show_guid=None, single_show_
                 FROM sResults.ShowList sl
                 WHERE sl.ShowGUID = ?
                 AND sl.ShowGUID IS NOT NULL AND sl.ShowGUID != ''
-                -- Has ShowClass rows with Placings > 0 that don't have ShowResults
+                -- Has ShowClass rows that need processing (missing placing results OR missing non-placing entries)
                 AND EXISTS (
                     SELECT 1
                     FROM sResults.ShowClass sc
                     WHERE sc.ShowListID = sl.ID
                     AND sc.Placings > 0
-                    AND NOT EXISTS (
-                        SELECT 1 
-                        FROM sResults.ShowResults sr
-                        WHERE sr.ShowClassID = sc.ID
+                    AND (
+                        -- Case 1: No placing results at all (Place > 0)
+                        NOT EXISTS (
+                            SELECT 1
+                            FROM sResults.ShowResults sr
+                            WHERE sr.ShowClassID = sc.ID
+                            AND sr.Place > 0
+                        )
+                        OR
+                        -- Case 2: Has placing results but missing non-placing entries
+                        (
+                            sc.Entries > sc.Placings
+                            AND ISNULL(sc.NonPlacingComplete, 0) = 0
+                            AND EXISTS (
+                                SELECT 1
+                                FROM sResults.ShowResults sr
+                                WHERE sr.ShowClassID = sc.ID
+                                AND sr.Place > 0
+                            )
+                        )
                     )
                 )
                 ORDER BY sl.ID
@@ -1268,16 +1382,34 @@ def get_shows_with_missing_classes(conn, start_from_show_guid=None, single_show_
                 year = row[2]
                 show_name = row[3]
                 
-                # Get ShowClass IDs with Placings > 0 that don't have ShowResults
+                # Get ShowClass IDs that need processing (using same logic as get_incomplete_classes_for_show):
+                # 1. Classes with Placings > 0 that don't have placing ShowResults (Place > 0)
+                # 2. Classes that have placing results but are missing non-placing entries (Entries > Placings and NonPlacingComplete = 0)
                 cursor.execute("""
-                    SELECT sc.ID
+                    SELECT DISTINCT sc.ID
                     FROM sResults.ShowClass sc
                     WHERE sc.ShowListID = ?
                     AND sc.Placings > 0
-                    AND NOT EXISTS (
-                        SELECT 1
-                        FROM sResults.ShowResults sr
-                        WHERE sr.ShowClassID = sc.ID
+                    AND (
+                        -- Case 1: No placing results at all (Place > 0) - ignore NonPlacingComplete for placing entries
+                        NOT EXISTS (
+                            SELECT 1
+                            FROM sResults.ShowResults sr
+                            WHERE sr.ShowClassID = sc.ID
+                            AND sr.Place > 0
+                        )
+                        OR
+                        -- Case 2: Has placing results but missing non-placing entries (only check NonPlacingComplete for non-placing)
+                        (
+                            sc.Entries > sc.Placings
+                            AND ISNULL(sc.NonPlacingComplete, 0) = 0
+                            AND EXISTS (
+                                SELECT 1
+                                FROM sResults.ShowResults sr
+                                WHERE sr.ShowClassID = sc.ID
+                                AND sr.Place > 0
+                            )
+                        )
                     )
                     ORDER BY sc.ID
                 """, show_list_id)
@@ -1304,17 +1436,33 @@ def get_shows_with_missing_classes(conn, start_from_show_guid=None, single_show_
                 
                 if check_row:
                     show_id, show_guid, year, show_name = check_row
-                    # Check if it has missing classes
+                    # Check if it has missing classes (using same logic as get_incomplete_classes_for_show)
                     cursor = conn.cursor()
                     cursor.execute("""
                         SELECT COUNT(*)
                         FROM sResults.ShowClass sc
                         WHERE sc.ShowListID = ?
                         AND sc.Placings > 0
-                        AND NOT EXISTS (
-                            SELECT 1
-                            FROM sResults.ShowResults sr
-                            WHERE sr.ShowClassID = sc.ID
+                        AND (
+                            -- Case 1: No placing results at all (Place > 0)
+                            NOT EXISTS (
+                                SELECT 1
+                                FROM sResults.ShowResults sr
+                                WHERE sr.ShowClassID = sc.ID
+                                AND sr.Place > 0
+                            )
+                            OR
+                            -- Case 2: Has placing results but missing non-placing entries
+                            (
+                                sc.Entries > sc.Placings
+                                AND ISNULL(sc.NonPlacingComplete, 0) = 0
+                                AND EXISTS (
+                                    SELECT 1
+                                    FROM sResults.ShowResults sr
+                                    WHERE sr.ShowClassID = sc.ID
+                                    AND sr.Place > 0
+                                )
+                            )
                         )
                     """, show_id)
                     missing_count = cursor.fetchone()[0]
@@ -1350,16 +1498,32 @@ def get_shows_with_missing_classes(conn, start_from_show_guid=None, single_show_
                 AND sl.StartDate IS NOT NULL
                 AND CAST(sl.EndDate AS DATE) < CAST(GETDATE() AS DATE)
                 AND sl.ID >= ?
-                -- Has ShowClass rows with Placings > 0 that don't have ShowResults
+                -- Has ShowClass rows that need processing (missing placing results OR missing non-placing entries)
                 AND EXISTS (
                     SELECT 1
                     FROM sResults.ShowClass sc
                     WHERE sc.ShowListID = sl.ID
                     AND sc.Placings > 0
-                    AND NOT EXISTS (
-                        SELECT 1 
-                        FROM sResults.ShowResults sr
-                        WHERE sr.ShowClassID = sc.ID
+                    AND (
+                        -- Case 1: No placing results at all (Place > 0)
+                        NOT EXISTS (
+                            SELECT 1
+                            FROM sResults.ShowResults sr
+                            WHERE sr.ShowClassID = sc.ID
+                            AND sr.Place > 0
+                        )
+                        OR
+                        -- Case 2: Has placing results but missing non-placing entries
+                        (
+                            sc.Entries > sc.Placings
+                            AND ISNULL(sc.NonPlacingComplete, 0) = 0
+                            AND EXISTS (
+                                SELECT 1
+                                FROM sResults.ShowResults sr
+                                WHERE sr.ShowClassID = sc.ID
+                                AND sr.Place > 0
+                            )
+                        )
                     )
                 )
                 ORDER BY sl.ID
@@ -1375,16 +1539,32 @@ def get_shows_with_missing_classes(conn, start_from_show_guid=None, single_show_
                 WHERE sl.ShowGUID IS NOT NULL AND sl.ShowGUID != ''
                 AND sl.StartDate IS NOT NULL
                 AND CAST(sl.EndDate AS DATE) < CAST(GETDATE() AS DATE)
-                -- Has ShowClass rows with Placings > 0 that don't have ShowResults
+                -- Has ShowClass rows that need processing (missing placing results OR missing non-placing entries)
                 AND EXISTS (
                     SELECT 1
                     FROM sResults.ShowClass sc
                     WHERE sc.ShowListID = sl.ID
                     AND sc.Placings > 0
-                    AND NOT EXISTS (
-                        SELECT 1 
-                        FROM sResults.ShowResults sr
-                        WHERE sr.ShowClassID = sc.ID
+                    AND (
+                        -- Case 1: No placing results at all (Place > 0)
+                        NOT EXISTS (
+                            SELECT 1
+                            FROM sResults.ShowResults sr
+                            WHERE sr.ShowClassID = sc.ID
+                            AND sr.Place > 0
+                        )
+                        OR
+                        -- Case 2: Has placing results but missing non-placing entries
+                        (
+                            sc.Entries > sc.Placings
+                            AND ISNULL(sc.NonPlacingComplete, 0) = 0
+                            AND EXISTS (
+                                SELECT 1
+                                FROM sResults.ShowResults sr
+                                WHERE sr.ShowClassID = sc.ID
+                                AND sr.Place > 0
+                            )
+                        )
                     )
                 )
                 ORDER BY sl.ID
@@ -1400,16 +1580,34 @@ def get_shows_with_missing_classes(conn, start_from_show_guid=None, single_show_
             year = row[2]
             show_name = row[3]
             
-            # Get ShowClass IDs with Placings > 0 that don't have ShowResults
+            # Get ShowClass IDs that need processing (using same logic as get_incomplete_classes_for_show):
+            # 1. Classes with Placings > 0 that don't have placing ShowResults (Place > 0)
+            # 2. Classes that have placing results but are missing non-placing entries (Entries > Placings and NonPlacingComplete = 0)
             cursor.execute("""
-                SELECT sc.ID
+                SELECT DISTINCT sc.ID
                 FROM sResults.ShowClass sc
                 WHERE sc.ShowListID = ?
                 AND sc.Placings > 0
-                AND NOT EXISTS (
-                    SELECT 1
-                    FROM sResults.ShowResults sr
-                    WHERE sr.ShowClassID = sc.ID
+                AND (
+                    -- Case 1: No placing results at all (Place > 0) - ignore NonPlacingComplete for placing entries
+                    NOT EXISTS (
+                        SELECT 1
+                        FROM sResults.ShowResults sr
+                        WHERE sr.ShowClassID = sc.ID
+                        AND sr.Place > 0
+                    )
+                    OR
+                    -- Case 2: Has placing results but missing non-placing entries (only check NonPlacingComplete for non-placing)
+                    (
+                        sc.Entries > sc.Placings
+                        AND ISNULL(sc.NonPlacingComplete, 0) = 0
+                        AND EXISTS (
+                            SELECT 1
+                            FROM sResults.ShowResults sr
+                            WHERE sr.ShowClassID = sc.ID
+                            AND sr.Place > 0
+                        )
+                    )
                 )
                 ORDER BY sc.ID
             """, show_list_id)
@@ -1714,94 +1912,115 @@ def get_column_indices_for_entry_grid(detail_grid):
     
     return column_map
 
-def expand_row(driver, row_id, reconnect_func=None, sleep_short=0.3, sleep_very_short=0.2):
+def expand_row(driver, row_id, reconnect_func=None, sleep_short=0.1, sleep_very_short=0.05):
     """Expand a row by clicking the expand button/icon using row ID
     
     Args:
         driver: WebDriver instance
         row_id: Row ID string to find the row element
         reconnect_func: Optional function to reconnect browser on stale element
-        sleep_short: Short sleep duration in seconds (default: 0.3)
-        sleep_very_short: Very short sleep duration in seconds (default: 0.2)
+        sleep_short: Short sleep duration in seconds (default: 0.1, reduced for faster retries)
+        sleep_very_short: Very short sleep duration in seconds (default: 0.05)
     """
     try:
         if not row_id:
             return False
         
-        # Re-find the row element by ID with retry
-        def find_row():
-            return driver.find_element(By.ID, row_id)
+        # Validate that this is a main row ID, not a detail row ID
+        # Detail rows contain: grPlacing, grNonPlacing, dxdt (detail containers), or are in detail grids
+        detail_row_indicators = ['grPlacing', 'grNonPlacing', 'dxdt']
+        is_detail_row = any(indicator in row_id for indicator in detail_row_indicators)
         
-        row_element = retry_on_stale_element(find_row, max_retries=3, delay=sleep_short, reconnect_func=reconnect_func)
-        if not row_element:
+        if is_detail_row:
+            print_with_timestamp(f"        [EXPAND] Rejected detail row ID: {row_id[:50]}...")
             return False
         
-        # DevExpress detail rows: first cell has class dxgvDetailButton_Office2010Blue
-        def get_first_cell():
-            cell = row_element.find_element(By.TAG_NAME, "td")
-            return cell, cell.get_attribute('class') or ''
-        
-        result = retry_on_stale_element(get_first_cell, max_retries=3, delay=sleep_short)
-        if result:
-            first_cell, first_cell_class = result
-        else:
-            # If retry failed, try one more time to re-find row
-            row_element = retry_on_stale_element(find_row, max_retries=2, delay=sleep_short)
-            if not row_element:
-                return False
-            result = retry_on_stale_element(get_first_cell, max_retries=2, delay=sleep_short)
-            if not result:
-                return False
-            first_cell, first_cell_class = result
-        
-        # Check if this is a detail button cell
-        if 'dxgvDetailButton' in first_cell_class:
-            # Look for the expand/collapse image with retry
-            def get_detail_images():
-                return first_cell.find_elements(By.TAG_NAME, "img")
+        # Always re-find the row element immediately before use (don't cache)
+        def find_and_click_expand():
+            # Re-find row element fresh each time
+            # Try multiple methods to find the row, but only in the main grid (not detail grids)
+            row_element = None
             
-            detail_images = retry_on_stale_element(get_detail_images, max_retries=3, delay=sleep_short)
-            if detail_images:
+            try:
+                # Method 1: Find by ID (fastest if ID is still valid)
+                row_element = driver.find_element(By.ID, row_id)
+                # Verify it's NOT in a detail grid (rows with detail indicators in their ID are detail rows)
+                row_id_attr = row_element.get_attribute('id') or ''
+                detail_row_indicators_check = ['grPlacing', 'grNonPlacing', 'dxdt']
+                if any(indicator in row_id_attr for indicator in detail_row_indicators_check):
+                    raise NoSuchElementException("Row is in detail grid, not main grid")
+            except (NoSuchElementException, StaleElementReferenceException):
+                # Method 2: Try XPath with main grid context (exclude detail grids)
+                try:
+                    row_element = driver.find_element(By.XPATH, 
+                        f"//table[contains(@id, 'grMaster') and not(contains(@id, 'grPlacing'))]//tr[@id='{row_id}']")
+                except (NoSuchElementException, StaleElementReferenceException):
+                    # Method 3: Try finding in main grid using alternative selectors
+                    try:
+                        main_grid = driver.find_element(By.CSS_SELECTOR, "table[id*='grMaster']")
+                        row_element = main_grid.find_element(By.XPATH, f".//tr[@id='{row_id}']")
+                    except (NoSuchElementException, StaleElementReferenceException):
+                        raise NoSuchElementException(f"Could not find row with ID: {row_id} in main grid")
+            
+            if not row_element:
+                raise NoSuchElementException(f"Could not find row with ID: {row_id}")
+            
+            # Get first cell fresh
+            first_cell = row_element.find_element(By.TAG_NAME, "td")
+            first_cell_class = first_cell.get_attribute('class') or ''
+            
+            # Check if this is a detail button cell
+            if 'dxgvDetailButton' in first_cell_class:
+                # Look for the expand/collapse images
+                detail_images = first_cell.find_elements(By.TAG_NAME, "img")
                 for img in detail_images:
                     try:
-                        img_class = retry_on_stale_element(lambda: img.get_attribute('class') or '', max_retries=2, delay=sleep_very_short)
-                        img_onclick = retry_on_stale_element(lambda: img.get_attribute('onclick') or '', max_retries=2, delay=sleep_very_short)
+                        img_class = img.get_attribute('class') or ''
+                        img_onclick = img.get_attribute('onclick') or ''
                         
-                        # Check if already expanded (has collapse button with GVHideDetailRow)
-                        if img_class and ('gvDetailExpandedButton' in img_class or 'GVHideDetailRow' in (img_onclick or '')):
-                            # Already expanded
-                            return True
+                        # Check if already expanded
+                        if 'gvDetailExpandedButton' in img_class or 'GVHideDetailRow' in img_onclick:
+                            return True  # Already expanded
                         
-                        # Check if it's an expand button (GVShowDetailRow)
-                        if img_onclick and ('GVShowDetailRow' in img_onclick or (img_class and 'gvDetail' in img_class and 'Expanded' not in img_class)):
-                            # Click to expand
+                        # Check if it's an expand button
+                        if 'GVShowDetailRow' in img_onclick or ('gvDetail' in img_class and 'Expanded' not in img_class):
                             driver.execute_script("arguments[0].click();", img)
                             return True
+                    except StaleElementReferenceException:
+                        # Re-find images if stale
+                        detail_images = first_cell.find_elements(By.TAG_NAME, "img")
+                        continue
                     except:
                         continue
+                
+                # If no specific image found, try clicking the first cell
+                driver.execute_script("arguments[0].click();", first_cell)
+                return True
             
-            # If no specific image found, try clicking the first cell
-            driver.execute_script("arguments[0].click();", first_cell)
-            return True
-        
-        # Fallback: Try to find expand button in first cell (older method)
-        def get_expand_buttons():
+            # Fallback: Try to find expand button in first cell
             expand_images = first_cell.find_elements(By.CSS_SELECTOR, 
                 "img[src*='Plus'], img[src*='plus'], img[src*='Expand'], img[src*='expand']")
             expand_links = first_cell.find_elements(By.CSS_SELECTOR, 
                 "a.dxgvCommandColumnItem, a[onclick*='Expand'], a[onclick*='expand']")
-            return expand_images + expand_links
-        
-        expand_buttons = retry_on_stale_element(get_expand_buttons, max_retries=3, delay=sleep_short)
-        if expand_buttons:
-            driver.execute_script("arguments[0].click();", expand_buttons[0])
-            time.sleep(sleep_short / 4)
+            expand_buttons = expand_images + expand_links
+            
+            if expand_buttons:
+                driver.execute_script("arguments[0].click();", expand_buttons[0])
+                return True
+            
+            # Last resort: click the first cell directly
+            driver.execute_script("arguments[0].click();", first_cell)
             return True
         
-        # Try clicking the first cell directly
-        driver.execute_script("arguments[0].click();", first_cell)
-        time.sleep(sleep_short / 4)
-        return True
+        # Retry with aggressive re-finding and early reconnection on timeout
+        print_with_timestamp(f"        [EXPAND] Attempting to expand row (ID: {row_id[:50]}...)")
+        result = retry_on_stale_element(find_and_click_expand, max_retries=3, delay=sleep_short, reconnect_func=reconnect_func, max_total_time=10, operation_name="expand_row")
+        if result is not False:
+            print_with_timestamp(f"        [EXPAND] Row expansion successful")
+        else:
+            print_with_timestamp(f"        [EXPAND] Row expansion failed")
+        return result is not False  # Return True if operation succeeded, False otherwise
+        
     except Exception as e:
         print_with_timestamp(f"        [DEBUG] expand_row error: {e}")
         return False
@@ -2116,7 +2335,7 @@ def save_show_result_to_database(conn, show_class_id, entry_details, cursor=None
         if not use_external_cursor:
             cursor.close()
 
-def find_and_click_show_row(driver, show_guid, year, show_name, sleep_medium=3):
+def find_and_click_show_row(driver, show_guid, year, show_name, sleep_medium=1):
     """Find and click the show row in the ShowSelector grid to navigate to ClassResults
     
     Args:
@@ -2126,171 +2345,224 @@ def find_and_click_show_row(driver, show_guid, year, show_name, sleep_medium=3):
         show_name: Show name for navigation context
         sleep_medium: Medium sleep duration in seconds (default: 3)
     """
-    try:
-        # Wait for grid to load
-        time.sleep(sleep_medium)
-        
-        # Find the grid - DevExpress GridView typically has ID containing 'grMaster'
-        grid = None
-        grid_selectors = [
-            "table[id*='grMaster'][id*='MainTable']",
-            "table[id*='grMaster']",
-            "table[id*='MainContent'][id*='gr']",
-            "table.dxgvTable",
-            "table[id*='DXMainTable']",
-        ]
-        
-        for selector in grid_selectors:
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # Wait for grid to load (optimized - use WebDriverWait instead of fixed sleep)
             try:
-                grids = driver.find_elements(By.CSS_SELECTOR, selector)
-                for g in grids:
-                    if g.is_displayed():
-                        grid = g
-                        break
-                if grid:
-                    break
+                WebDriverWait(driver, 3).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']"))
+                )
             except:
-                continue
-        
-        if not grid:
-            # Try fallback
-            try:
-                all_tables = driver.find_elements(By.TAG_NAME, "table")
-                for table in all_tables:
-                    if table.is_displayed() and len(table.find_elements(By.TAG_NAME, "tr")) > 1:
-                        grid = table
+                time.sleep(sleep_medium)
+            
+            # Find the grid - DevExpress GridView typically has ID containing 'grMaster'
+            grid = None
+            grid_selectors = [
+                "table[id*='grMaster'][id*='MainTable']",
+                "table[id*='grMaster']",
+                "table[id*='MainContent'][id*='gr']",
+                "table.dxgvTable",
+                "table[id*='DXMainTable']",
+            ]
+            
+            for selector in grid_selectors:
+                try:
+                    grids = driver.find_elements(By.CSS_SELECTOR, selector)
+                    for g in grids:
+                        if g.is_displayed():
+                            grid = g
+                            break
+                    if grid:
                         break
-            except:
-                pass
-        
-        if not grid:
-            print_with_timestamp(f"  [ERROR] Could not find grid for year {year}")
-            return False
-        
-        # Find all data rows
-        rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
-        if not rows:
-            all_rows = grid.find_elements(By.TAG_NAME, "tr")
-            rows = []
-            for r in all_rows:
-                row_id = r.get_attribute('id') or ''
-                row_class = r.get_attribute('class') or ''
-                if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
-                    rows.append(r)
-        
-        # Find the row with matching Show Name
-        # Column structure: 0=Command, 1=Date, 2=Name, 3=Location, 4=State, 5=Body
-        target_row_index = None
-        exact_match_index = None
-        partial_matches = []  # Store (index, row_show_name) for partial matches
-        
-        for idx, row in enumerate(rows):
-            try:
-                cells = row.find_elements(By.TAG_NAME, "td")
-                if len(cells) >= 3:
-                    # Show Name is typically at index 2
-                    show_name_cell = cells[2] if len(cells) > 2 else cells[1]
-                    row_show_name = show_name_cell.text.strip()
-                    
-                    # Try exact match first (case-insensitive)
-                    if show_name and show_name.lower() == row_show_name.lower():
-                        exact_match_index = idx
-                        target_row_index = idx
-                        print_with_timestamp(f"  Found exact matching show row: {row_show_name}")
-                        break
-                    # Store partial matches for fallback
-                    elif show_name and show_name.lower() in row_show_name.lower():
-                        partial_matches.append((idx, row_show_name))
-            except StaleElementReferenceException:
-                # Re-find rows if they become stale
-                rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
-                if not rows:
-                    all_rows = grid.find_elements(By.TAG_NAME, "tr")
-                    rows = []
-                    for r in all_rows:
-                        row_id = r.get_attribute('id') or ''
-                        row_class = r.get_attribute('class') or ''
-                        if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
-                            rows.append(r)
-                continue
-            except Exception as e:
-                continue
-        
-        # If no exact match, try to find the best partial match
-        # Prefer matches where the show_name length is closer to the row_show_name length
-        if target_row_index is None and partial_matches:
-            # Sort by length difference (prefer shorter differences)
-            partial_matches.sort(key=lambda x: abs(len(x[1]) - len(show_name)))
-            # Use the first (best) match
-            target_row_index = partial_matches[0][0]
-            print_with_timestamp(f"  Found partial matching show row: {partial_matches[0][1]} (no exact match found)")
-        
-        if target_row_index is not None:
-            try:
-                # Re-find the grid and rows to avoid stale elements
-                grid = driver.find_element(By.CSS_SELECTOR, 
-                    "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
-                rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
-                if not rows:
-                    all_rows = grid.find_elements(By.TAG_NAME, "tr")
-                    rows = []
-                    for r in all_rows:
-                        row_id = r.get_attribute('id') or ''
-                        row_class = r.get_attribute('class') or ''
-                        if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
-                            rows.append(r)
-                
-                if target_row_index < len(rows):
-                    target_row = rows[target_row_index]
-                    cells = target_row.find_elements(By.TAG_NAME, "td")
+                except:
+                    continue
+            
+            if not grid:
+                # Try fallback
+                try:
+                    all_tables = driver.find_elements(By.TAG_NAME, "table")
+                    for table in all_tables:
+                        if table.is_displayed() and len(table.find_elements(By.TAG_NAME, "tr")) > 1:
+                            grid = table
+                            break
+                except:
+                    pass
+            
+            if not grid:
+                print_with_timestamp(f"  [ERROR] Could not find grid for year {year}")
+                return False
+            
+            # Find all data rows (re-find each time to avoid stale elements)
+            def find_rows(current_grid=None):
+                if current_grid is None:
+                    current_grid = grid
+                try:
+                    rows = current_grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
+                    if not rows:
+                        all_rows = current_grid.find_elements(By.TAG_NAME, "tr")
+                        rows = []
+                        for r in all_rows:
+                            try:
+                                row_id = r.get_attribute('id') or ''
+                                row_class = r.get_attribute('class') or ''
+                                if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
+                                    rows.append(r)
+                            except StaleElementReferenceException:
+                                continue
+                    return rows
+                except StaleElementReferenceException:
+                    # Re-find grid if it's stale
+                    try:
+                        current_grid = driver.find_element(By.CSS_SELECTOR, 
+                            "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+                        return find_rows(current_grid)
+                    except:
+                        return []
+            
+            rows = find_rows()
+            
+            # Find the row with matching Show Name
+            # Column structure: 0=Command, 1=Date, 2=Name, 3=Location, 4=State, 5=Body
+            target_row_index = None
+            exact_match_index = None
+            partial_matches = []  # Store (index, row_show_name) for partial matches
+            
+            for idx, row in enumerate(rows):
+                try:
+                    cells = row.find_elements(By.TAG_NAME, "td")
                     if len(cells) >= 3:
-                        clickable_cell = cells[2]  # Show Name cell
-                        driver.execute_script("arguments[0].click();", clickable_cell)
-                        time.sleep(sleep_medium)  # Wait for navigation to ShowDetails page
+                        # Show Name is typically at index 2
+                        show_name_cell = cells[2] if len(cells) > 2 else cells[1]
+                        row_show_name = show_name_cell.text.strip()
                         
-                        # Verify we're on the correct page by checking URL contains ShowGUID
-                        current_url = driver.current_url
-                        if show_guid.lower() in current_url.lower():
-                            print_with_timestamp(f"  [OK] Verified correct show page (ShowGUID in URL)")
-                        else:
-                            print_with_timestamp(f"  [WARNING] ShowGUID not found in URL after click, using direct navigation")
-                            class_results_url = f'https://horseshowsonline.com/ClassResults?ShowGUID={show_guid}'
-                            driver.get(class_results_url)
-                            time.sleep(sleep_medium)
-                            return True
-                        
-                        # Now click the ClassResults tab on the ShowDetails page
-                        if activate_class_results_tab(driver):
-                            print_with_timestamp(f"  [OK] Class Results tab activated")
-                            return True
-                        else:
-                            print_with_timestamp(f"  [WARNING] Could not activate Class Results tab, trying direct navigation")
-                            # Fallback to direct navigation
-                            class_results_url = f'https://horseshowsonline.com/ClassResults?ShowGUID={show_guid}'
-                            driver.get(class_results_url)
-                            time.sleep(sleep_medium)
-                            return True
-            except StaleElementReferenceException:
-                print_with_timestamp(f"  [WARNING] Stale element when clicking, trying direct navigation")
-            except Exception as e:
-                print_with_timestamp(f"  [WARNING] Error clicking show row: {e}")
-        
-        # If we couldn't find it by name, try direct navigation
-        print_with_timestamp(f"  [WARNING] Could not find show row by name '{show_name}', navigating directly to ClassResults")
-        class_results_url = f'https://horseshowsonline.com/ClassResults?ShowGUID={show_guid}'
-        driver.get(class_results_url)
-        time.sleep(sleep_medium)
-        return True
-        
-    except Exception as e:
-        print_with_timestamp(f"  [ERROR] Error finding/clicking show row: {e}")
-        # Fallback to direct navigation
-        class_results_url = f'https://horseshowsonline.com/ClassResults?ShowGUID={show_guid}'
-        driver.get(class_results_url)
-        time.sleep(sleep_medium)
-        return True
+                        # Try exact match first (case-insensitive)
+                        if show_name and show_name.lower() == row_show_name.lower():
+                            exact_match_index = idx
+                            target_row_index = idx
+                            print_with_timestamp(f"  Found exact matching show row: {row_show_name}")
+                            break
+                        # Store partial matches for fallback
+                        elif show_name and show_name.lower() in row_show_name.lower():
+                            partial_matches.append((idx, row_show_name))
+                except StaleElementReferenceException:
+                    # Re-find rows if they become stale
+                    rows = find_rows()
+                    continue
+                except Exception as e:
+                    continue
+            
+            # If no exact match, try to find the best partial match
+            # Prefer matches where the show_name length is closer to the row_show_name length
+            if target_row_index is None and partial_matches:
+                # Sort by length difference (prefer shorter differences)
+                partial_matches.sort(key=lambda x: abs(len(x[1]) - len(show_name)))
+                # Use the first (best) match
+                target_row_index = partial_matches[0][0]
+                print_with_timestamp(f"  Found partial matching show row: {partial_matches[0][1]} (no exact match found)")
+            
+            if target_row_index is not None:
+                try:
+                    # Re-find the grid and rows to avoid stale elements
+                    grid = driver.find_element(By.CSS_SELECTOR, 
+                        "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+                    rows = find_rows()
+                    
+                    if target_row_index < len(rows):
+                        target_row = rows[target_row_index]
+                        cells = target_row.find_elements(By.TAG_NAME, "td")
+                        if len(cells) >= 3:
+                            clickable_cell = cells[2]  # Show Name cell
+                            driver.execute_script("arguments[0].click();", clickable_cell)
+                            # Wait for navigation (optimized - use WebDriverWait)
+                            try:
+                                WebDriverWait(driver, 3).until(
+                                    lambda d: show_guid.lower() in d.current_url.lower() or 'ClassResults' in d.current_url or 'ShowDetails' in d.current_url
+                                )
+                            except:
+                                time.sleep(sleep_medium)  # Fallback wait
+                            
+                            # Verify we're on the correct page by checking URL contains ShowGUID
+                            current_url = driver.current_url
+                            if show_guid.lower() in current_url.lower():
+                                print_with_timestamp(f"  [OK] Verified correct show page (ShowGUID in URL)")
+                            else:
+                                print_with_timestamp(f"  [WARNING] ShowGUID not found in URL after click, using direct navigation")
+                                class_results_url = f'https://horseshowsonline.com/ClassResults?ShowGUID={show_guid}'
+                                driver.get(class_results_url)
+                                # Wait for grid with WebDriverWait instead of fixed sleep
+                                try:
+                                    WebDriverWait(driver, 6).until(
+                                        EC.presence_of_element_located((By.CSS_SELECTOR, "table[id*='grMaster'], table.dxgvTable"))
+                                    )
+                                except:
+                                    time.sleep(sleep_medium)  # Fallback wait
+                                return True
+                            
+                            # Now click the ClassResults tab on the ShowDetails page (optimized)
+                            if activate_class_results_tab(driver, sleep_short=0.5, sleep_medium=1):
+                                print_with_timestamp(f"  [OK] Class Results tab activated")
+                                return True
+                            else:
+                                print_with_timestamp(f"  [WARNING] Could not activate Class Results tab, trying direct navigation")
+                                # Fallback to direct navigation (optimized)
+                                class_results_url = f'https://horseshowsonline.com/ClassResults?ShowGUID={show_guid}'
+                                driver.get(class_results_url)
+                                # Wait for grid with WebDriverWait instead of fixed sleep
+                                try:
+                                    WebDriverWait(driver, 6).until(
+                                        EC.presence_of_element_located((By.CSS_SELECTOR, "table[id*='grMaster'], table.dxgvTable"))
+                                    )
+                                except:
+                                    time.sleep(sleep_medium)  # Fallback wait
+                                return True
+                except StaleElementReferenceException as e:
+                    if attempt < max_retries - 1:
+                        print_with_timestamp(f"  [RETRY] Stale element when clicking (attempt {attempt + 1}/{max_retries}), retrying...")
+                        time.sleep(0.2)
+                        continue
+                    else:
+                        print_with_timestamp(f"  [WARNING] Stale element when clicking after {max_retries} attempts, trying direct navigation")
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        print_with_timestamp(f"  [RETRY] Error clicking show row (attempt {attempt + 1}/{max_retries}): {e}, retrying...")
+                        time.sleep(0.2)
+                        continue
+                    else:
+                        print_with_timestamp(f"  [WARNING] Error clicking show row after {max_retries} attempts: {e}")
+            
+            # If we get here and haven't returned, break out of retry loop
+            break
+            
+        except StaleElementReferenceException as e:
+            if attempt < max_retries - 1:
+                print_with_timestamp(f"  [RETRY] Stale element in find_and_click_show_row (attempt {attempt + 1}/{max_retries}), retrying...")
+                time.sleep(0.2)
+                continue
+            else:
+                print_with_timestamp(f"  [WARNING] Stale element after {max_retries} attempts, trying direct navigation")
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print_with_timestamp(f"  [RETRY] Error in find_and_click_show_row (attempt {attempt + 1}/{max_retries}): {e}, retrying...")
+                time.sleep(0.2)
+                continue
+            else:
+                print_with_timestamp(f"  [ERROR] Error finding/clicking show row after {max_retries} attempts: {e}")
+    
+    # If we couldn't find it by name, try direct navigation (optimized)
+    print_with_timestamp(f"  [WARNING] Could not find show row by name '{show_name}', navigating directly to ClassResults")
+    class_results_url = f'https://horseshowsonline.com/ClassResults?ShowGUID={show_guid}'
+    driver.get(class_results_url)
+    # Wait for grid with WebDriverWait instead of fixed sleep
+    try:
+        WebDriverWait(driver, 6).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "table[id*='grMaster'], table.dxgvTable"))
+        )
+    except:
+        time.sleep(sleep_medium)  # Fallback wait
+    return True
 
-def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_name, conn, show_class_ids=None, sleep_short=0.5, sleep_medium=1, sleep_long=3):
+def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_name, conn, show_class_ids=None, sleep_short=0.3, sleep_medium=0.5, sleep_long=1):
     """Scrape class results for a single show
     
     Args:
@@ -2318,43 +2590,111 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
     results_count = 0
     
     try:
-        # Navigate to ShowSelector page first
-        show_selector_url = 'https://horseshowsonline.com/ShowSelector.aspx'
-        if 'ShowSelector' not in driver.current_url:
-            print_with_timestamp("  Navigating to ShowSelector page...")
-            driver.get(show_selector_url)
-            time.sleep(sleep_long)
-            log_import_activity(conn, 'scrape_class_results.py', action='NAVIGATE', 
-                              additional_info=f'Navigated to ShowSelector page for ShowGUID: {show_guid}')
+        # Check if driver session is valid before proceeding
+        try:
+            current_url = driver.current_url
+        except Exception as e:
+            print_with_timestamp(f"  [WARNING] Driver session invalid at start, reconnecting...")
+            new_driver = reconnect_browser_and_navigate(driver, show_guid, year, show_name)
+            if new_driver:
+                driver = new_driver
+            else:
+                print_with_timestamp(f"  [ERROR] Failed to reconnect browser, aborting show")
+                return 0, driver
         
-        # Activate Shows By Year tab
-        if not activate_shows_by_year_tab(driver):
+        # Navigate to ShowSelector page first (optimized)
+        show_selector_url = 'https://horseshowsonline.com/ShowSelector.aspx'
+        try:
+            current_url = driver.current_url
+            if 'ShowSelector' not in current_url:
+                print_with_timestamp("  Navigating to ShowSelector page...")
+                driver.get(show_selector_url)
+                # Wait for page to load minimally
+                try:
+                    WebDriverWait(driver, 5).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "li.dxtc-tab, table[id*='grMaster']"))
+                    )
+                except:
+                    time.sleep(sleep_medium)  # Fallback minimal wait
+                log_import_activity(conn, 'scrape_class_results.py', action='NAVIGATE', 
+                                  additional_info=f'Navigated to ShowSelector page for ShowGUID: {show_guid}')
+        except Exception as e:
+            print_with_timestamp(f"  [WARNING] Error checking/accessing current URL: {e}, attempting reconnection...")
+            new_driver = reconnect_browser_and_navigate(driver, show_guid, year, show_name)
+            if new_driver:
+                driver = new_driver
+                # Try navigation again
+                try:
+                    driver.get(show_selector_url)
+                    WebDriverWait(driver, 5).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "li.dxtc-tab, table[id*='grMaster']"))
+                    )
+                except:
+                    time.sleep(sleep_medium)
+            else:
+                print_with_timestamp(f"  [ERROR] Failed to reconnect browser, aborting show")
+                return 0, driver
+        
+        # Activate Shows By Year tab (optimized - reduced sleeps)
+        if not activate_shows_by_year_tab(driver, sleep_medium=0.5, sleep_short=0.2):
             print_with_timestamp(f"  [WARNING] Failed to activate 'Shows By Year' tab, trying direct navigation")
             class_results_url = f'https://horseshowsonline.com/ClassResults?ShowGUID={show_guid}'
             driver.get(class_results_url)
-            time.sleep(sleep_long)
+            # Wait for grid with WebDriverWait instead of fixed sleep
+            try:
+                WebDriverWait(driver, 6).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "table[id*='grMaster'], table.dxgvTable"))
+                )
+            except:
+                time.sleep(sleep_long)  # Fallback wait
         else:
-            # Select the year
-            if not select_year(driver, year):
+            # Select the year (optimized - reduced sleeps)
+            if not select_year(driver, year, sleep_short=0.5, sleep_medium=0.8):
                 print_with_timestamp(f"  [WARNING] Failed to select year {year}, trying direct navigation")
                 class_results_url = f'https://horseshowsonline.com/ClassResults?ShowGUID={show_guid}'
                 driver.get(class_results_url)
-                time.sleep(sleep_long)
+                # Wait for grid with WebDriverWait instead of fixed sleep
+                try:
+                    WebDriverWait(driver, 6).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "table[id*='grMaster'], table.dxgvTable"))
+                    )
+                except:
+                    time.sleep(sleep_long)  # Fallback wait
             else:
-                # Find and click the show row to navigate to ClassResults
-                if not find_and_click_show_row(driver, show_guid, year, show_name):
+                # Find and click the show row to navigate to ClassResults (optimized - reduced sleeps)
+                if not find_and_click_show_row(driver, show_guid, year, show_name, sleep_medium=1):
                     print_with_timestamp(f"  [WARNING] Failed to find show row, trying direct navigation")
                     class_results_url = f'https://horseshowsonline.com/ClassResults?ShowGUID={show_guid}'
                     driver.get(class_results_url)
-                    time.sleep(sleep_long)
+                    # Wait for grid with WebDriverWait instead of fixed sleep
+                    try:
+                        WebDriverWait(driver, 6).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, "table[id*='grMaster'], table.dxgvTable"))
+                        )
+                    except:
+                        time.sleep(sleep_long)  # Fallback wait
         
-        # Wait for the ClassResults page to load - look for the grid table
+        # Wait for the ClassResults page to load - look for the grid table (optimized)
         try:
-            WebDriverWait(driver, 10).until(
+            print_with_timestamp(f"  Waiting for grid table to load (timeout: 15s)...")
+            WebDriverWait(driver, 15).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, "table[id*='grMaster'], table.dxgvTable"))
             )
+            print_with_timestamp(f"  Grid table detected by WebDriverWait")
         except TimeoutException:
-            print_with_timestamp(f"  [WARNING] Grid table not found after 10 seconds")
+            print_with_timestamp(f"  [WARNING] Grid table not found after 15 seconds")
+            # Debug: Check what tables are actually on the page
+            try:
+                all_tables = driver.find_elements(By.TAG_NAME, "table")
+                print_with_timestamp(f"  [DEBUG] Found {len(all_tables)} tables on page")
+                for i, table in enumerate(all_tables[:5]):  # Show first 5 tables
+                    table_id = table.get_attribute('id') or 'no-id'
+                    table_class = table.get_attribute('class') or 'no-class'
+                    is_displayed = table.is_displayed()
+                    tr_count = len(table.find_elements(By.TAG_NAME, "tr"))
+                    print_with_timestamp(f"    Table {i+1}: id='{table_id[:60]}...', class='{table_class[:60]}...', displayed={is_displayed}, rows={tr_count}")
+            except Exception as e:
+                print_with_timestamp(f"  [DEBUG] Error checking page tables: {e}")
         
         time.sleep(sleep_medium)  # Additional wait for JavaScript to populate grid
         
@@ -2502,14 +2842,17 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
             print_with_timestamp(f"\n  Skipping PASS 1 (class summaries already in database)")
             print_with_timestamp(f"  Building lookup map from grid rows...")
             
-            # Build a lookup map: (Class, ClassName) -> row_index (case-insensitive keys)
-            grid_lookup = {}  # Key: (class.lower(), class_name.lower()), Value: row_index (1-based)
+            # Build a lookup map: (Class, ClassName) -> (row_index, row_id) (case-insensitive keys)
+            grid_lookup = {}  # Key: (class.lower(), class_name.lower()), Value: (row_index (1-based), row_id)
             
             for idx, class_row in enumerate(class_rows, 1):
                 def extract_class_info():
                     cells = class_row.find_elements(By.TAG_NAME, "td")
                     if len(cells) < 3:
-                        return None, None
+                        return None, None, None
+                    
+                    # Get row ID
+                    row_id = class_row.get_attribute('id') or ''
                     
                     # Get Class and ClassName from grid row
                     class_col_idx = class_column_map.get('Class')
@@ -2525,15 +2868,15 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                     else:
                         grid_class_name = ''
                     
-                    return grid_class, grid_class_name
+                    return grid_class, grid_class_name, row_id
                 
                 try:
                     result = retry_on_stale_element(extract_class_info, max_retries=3, delay=sleep_short)
                     if result and result[0] is not None:
-                        grid_class, grid_class_name = result
+                        grid_class, grid_class_name, row_id = result
                         # Use case-insensitive keys for lookup
                         lookup_key = (grid_class.lower(), grid_class_name.lower())
-                        grid_lookup[lookup_key] = idx
+                        grid_lookup[lookup_key] = (idx, row_id)
                 except:
                     continue
             
@@ -2559,11 +2902,12 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                         
                         # Look up the matching row in the grid using the lookup map
                         lookup_key = (str(class_num).strip().lower(), class_name.strip().lower())
-                        row_index = grid_lookup.get(lookup_key)
+                        lookup_result = grid_lookup.get(lookup_key)
                         
-                        if row_index:
-                            class_data_list.append((row_index, show_class_id, entries))
-                            print_with_timestamp(f"    Found row {row_index} for Class {class_num}: {class_name[:50]}")
+                        if lookup_result:
+                            row_index, row_id = lookup_result
+                            class_data_list.append((row_index, row_id, show_class_id, entries))
+                            print_with_timestamp(f"    Found row {row_index} (ID: {row_id[:50]}...) for Class {class_num}: {class_name[:50]}")
                         else:
                             print_with_timestamp(f"    [WARNING] Could not find grid row for Class {class_num}: {class_name[:50]}")
                     else:
@@ -2700,7 +3044,13 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                     # If placings = 0, assume there are no results to acquire (but class is saved to DB)
                     placings_int = int(placings) if placings else 0
                     if placings_int > 0:
-                        class_data_list.append((row_idx, show_class_id, entries))
+                        # Get row ID for reliable lookup (avoids index shifts after expansions)
+                        try:
+                            row_id = class_row.get_attribute('id') or ''
+                            class_data_list.append((row_idx, row_id, show_class_id, entries))
+                        except:
+                            # If we can't get row ID, fall back to index-only format
+                            class_data_list.append((row_idx, None, show_class_id, entries))
                     else:
                         print_with_timestamp(f"      Class saved to database (Placings = 0, will not expand for results)")
                     
@@ -2715,7 +3065,7 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                                   action='INSERT', row_count=showclass_count,
                                   additional_info=f'ShowGUID: {show_guid}, ShowListID: {show_list_id}, Classes with entries: {len(class_data_list)}, Total classes: {showclass_count}')
 
-        # PASS 2: Expand each class row and capture entry details
+        # PASS 2: Expand all class rows at once, then extract entry details from all
         print_with_timestamp(f"\n  PASS 2: Extracting entry details...")
         log_import_activity(conn, 'scrape_class_results.py', action='PASS2_START', 
                           additional_info=f'ShowGUID: {show_guid}, ShowListID: {show_list_id}, Classes to process: {len(class_data_list)}')
@@ -2726,151 +3076,744 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
             nonlocal driver  # Allow access to outer scope driver variable
             return reconnect_browser_and_navigate(driver, show_guid, year, show_name)
         
-        for pass2_idx, (row_idx, show_class_id, entries) in enumerate(class_data_list, 1):
+        # STEP 1: Expand rows one at a time, extract data, then collapse
+        # (Grid only allows one row expanded at a time)
+        print_with_timestamp(f"  Step 1: Processing {len(class_data_list)} rows (expand -> extract -> collapse)...")
+        row_id_map = {}  # Map row_idx -> class_row_id for later reference
+        processed_count = 0
+        failed_rows = []  # Track rows that failed to expand for retry
+        entry_column_map = None  # Will be set from first placing grid
+        nonplacing_column_map = None  # Will be set from first non-placing grid
+        
+        # Re-find the grid and all rows first (only main grid, not detail grids)
+        try:
+            # Find the main grid (prefer grMaster, exclude detail grids like grPlacing)
+            grid = None
             try:
-                print_with_timestamp(f"  Processing entry details {pass2_idx}/{len(class_data_list)} (row {row_idx})...")
-                # Log class processing start
-                log_import_activity(conn, 'scrape_class_results.py', action='PROCESS_CLASS_START', 
-                                  target_table='ShowResults',
-                                  additional_info=f'ShowClassID: {show_class_id}, RowIdx: {row_idx}, Class {pass2_idx}/{len(class_data_list)}')
-                
-                # Get class details (Entries, Placings, and NonPlacingComplete) for validation
-                try:
-                    cursor = conn.cursor()
-                    cursor.execute("""
-                        SELECT Entries, Placings, ISNULL(NonPlacingComplete, 0) 
-                        FROM sResults.ShowClass 
-                        WHERE ID = ?
-                    """, show_class_id)
-                    class_row_data = cursor.fetchone()
-                    max_entries = class_row_data[0] if class_row_data and class_row_data[0] is not None else None
-                    max_placings = class_row_data[1] if class_row_data and class_row_data[1] is not None else None
-                    nonplacing_complete = class_row_data[2] if class_row_data and class_row_data[2] is not None else 0
-                    
-                    # Check if class already has placing results
-                    cursor.execute("""
-                        SELECT COUNT(*) 
-                        FROM sResults.ShowResults 
-                        WHERE ShowClassID = ? AND Place > 0
-                    """, show_class_id)
-                    existing_placing_count = cursor.fetchone()[0]
-                    has_existing_placings = existing_placing_count > 0
-                    cursor.close()
-                    
-                    # Log if we're processing a class that already has placing results but needs non-placing entries
-                    if has_existing_placings and max_entries and max_placings and max_entries > max_placings and not nonplacing_complete:
-                        print_with_timestamp(f"      [RESUME] Class already has {existing_placing_count} placing results, will capture missing non-placing entries")
-                except:
-                    max_entries = None
-                    max_placings = None
-                    nonplacing_complete = 0
-                    has_existing_placings = False
-                
-                # Track unique entries to prevent duplicates
-                seen_entries = set()
-                saved_count = 0
-                
-                # Re-find the grid and row
+                # Try to find main grid by XPath (excludes grPlacing)
+                grid = driver.find_element(By.XPATH, 
+                    "//table[contains(@id, 'grMaster') and not(contains(@id, 'grPlacing'))]")
+            except NoSuchElementException:
+                # Fallback to CSS selector
                 grid = driver.find_element(By.CSS_SELECTOR, 
                     "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
-                rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
-                if not rows:
-                    all_rows = grid.find_elements(By.TAG_NAME, "tr")
-                    rows = []
-                    for r in all_rows:
-                        row_id = r.get_attribute('id') or ''
-                        row_class = r.get_attribute('class') or ''
-                        if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
-                            rows.append(r)
-                
-                if row_idx > len(rows):
-                    print_with_timestamp(f"    [WARNING] Row {row_idx} no longer available")
-                    continue
-                
-                class_row = rows[row_idx - 1]
-                # Store row ID immediately while element is fresh
-                class_row_id = ''
+                # Verify it's not a detail grid
+                grid_id = grid.get_attribute('id') or ''
+                if 'grPlacing' in grid_id:
+                    # Try XPath again as fallback
+                    grid = driver.find_element(By.XPATH, 
+                        "//table[contains(@id, 'grMaster') and not(contains(@id, 'grPlacing'))]")
+            
+            rows = []
+            all_rows = grid.find_elements(By.TAG_NAME, "tr")
+            for r in all_rows:
                 try:
-                    class_row_id = class_row.get_attribute('id') or ''
-                except:
-                    pass
-
-                # Expand and extract entry details
-                if entries:
-                    try:
-                        # Expand the row - re-find it first to avoid stale element
-                        print_with_timestamp(f"      Attempting to expand row {row_idx}...")
-                        # Always re-find the row right before expanding to avoid stale element
-                        try:
-                            grid = driver.find_element(By.CSS_SELECTOR,
-                                "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+                    row_id = r.get_attribute('id') or ''
+                    row_class = r.get_attribute('class') or ''
+                    # Exclude detail rows (containing grPlacing, grNonPlacing, dxdt), header rows, and filter rows
+                    detail_row_indicators = ['grPlacing', 'grNonPlacing', 'dxdt']
+                    is_detail_row = any(indicator in row_id for indicator in detail_row_indicators)
+                    
+                    if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and \
+                       'HeaderRow' not in row_id and 'FilterRow' not in row_id and \
+                       not is_detail_row:
+                        rows.append(r)
+                except StaleElementReferenceException:
+                    continue  # Skip stale rows during collection
+            
+            # Expand all rows in sequence
+            for pass2_idx, row_data in enumerate(class_data_list, 1):
+                # Handle both old format (row_idx, show_class_id, entries) and new format (row_idx, row_id, show_class_id, entries)
+                if len(row_data) == 3:
+                    row_idx, show_class_id, entries = row_data
+                    stored_row_id = None
+                else:
+                    row_idx, stored_row_id, show_class_id, entries = row_data
+                # Check if driver session is still valid, reconnect if needed
+                try:
+                    _ = driver.current_url  # Test if session is valid
+                except Exception:
+                    print_with_timestamp(f"    [WARNING] Driver session invalid, reconnecting...")
+                    new_driver = create_reconnect_func()
+                    if new_driver:
+                        driver = new_driver
+                        # Re-find grid and rows after reconnection
+                        grid = driver.find_element(By.CSS_SELECTOR, 
+                            "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+                        rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
+                        if not rows:
                             all_rows = grid.find_elements(By.TAG_NAME, "tr")
-                            rows_refresh = []
+                            rows = []
                             for r in all_rows:
-                                try:
-                                    row_id = r.get_attribute('id') or ''
-                                    row_class = r.get_attribute('class') or ''
-                                    if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
-                                        rows_refresh.append(r)
-                                except StaleElementReferenceException:
-                                    continue
-                            
-                            # Try to find by index first, then by ID
-                            if row_idx <= len(rows_refresh):
-                                class_row = rows_refresh[row_idx - 1]
-                                # Update class_row_id after finding row by index
-                                try:
-                                    class_row_id = class_row.get_attribute('id') or ''
-                                except:
-                                    pass
-                            elif class_row_id:
-                                # Try to find by ID
-                                for r in rows_refresh:
+                                row_id = r.get_attribute('id') or ''
+                                row_class = r.get_attribute('class') or ''
+                                if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
+                                    rows.append(r)
+                    else:
+                        print_with_timestamp(f"    [ERROR] Failed to reconnect, skipping remaining rows")
+                        break
+                
+                # Re-find rows before each expansion to avoid stale element references
+                # (DOM may have changed from expanding previous rows)
+                try:
+                    grid = driver.find_element(By.CSS_SELECTOR, 
+                        "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+                    rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
+                    if not rows:
+                        all_rows = grid.find_elements(By.TAG_NAME, "tr")
+                        rows = []
+                        for r in all_rows:
+                            try:
+                                row_id = r.get_attribute('id') or ''
+                                row_class = r.get_attribute('class') or ''
+                                # Exclude detail rows (containing grPlacing, grNonPlacing, dxdt), header rows, and filter rows
+                                detail_row_indicators = ['grPlacing', 'grNonPlacing', 'dxdt']
+                                is_detail_row = any(indicator in row_id for indicator in detail_row_indicators)
+                                
+                                if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and \
+                                   'HeaderRow' not in row_id and 'FilterRow' not in row_id and \
+                                   not is_detail_row:
+                                    rows.append(r)
+                            except StaleElementReferenceException:
+                                continue  # Skip stale rows during collection
+                except Exception as e:
+                    print_with_timestamp(f"    [WARNING] Error re-finding rows before row {row_idx}: {e}")
+                    # Try to reconnect and continue
+                    try:
+                        new_driver = create_reconnect_func()
+                        if new_driver:
+                            driver = new_driver
+                            grid = driver.find_element(By.CSS_SELECTOR, 
+                                "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+                            rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
+                            if not rows:
+                                all_rows = grid.find_elements(By.TAG_NAME, "tr")
+                                rows = []
+                                for r in all_rows:
                                     try:
-                                        if r.get_attribute('id') == class_row_id:
-                                            class_row = r
-                                            break
+                                        row_id = r.get_attribute('id') or ''
+                                        row_class = r.get_attribute('class') or ''
+                                        if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
+                                            rows.append(r)
                                     except StaleElementReferenceException:
                                         continue
-                        except Exception as e:
-                            print_with_timestamp(f"        [DEBUG] Error re-finding row before expand: {e}")
-                            # Try to continue with original row, expand_row will handle stale elements
-                        
-                        # Check if we have a valid row ID before attempting expansion
-                        if not class_row_id:
-                            print_with_timestamp(f"      [ERROR] Could not get row ID for row {row_idx} after refresh, attempting to get from current row element...")
-                            # Last attempt: try to get ID from current class_row element
-                            try:
-                                if 'class_row' in locals() and class_row:
-                                    class_row_id = class_row.get_attribute('id') or ''
-                                    if class_row_id:
-                                        print_with_timestamp(f"      [OK] Retrieved row ID: {class_row_id}")
-                                    else:
-                                        print_with_timestamp(f"      [ERROR] Row element exists but has no ID, skipping row {row_idx}")
-                                        continue
-                                else:
-                                    print_with_timestamp(f"      [ERROR] Row element not available, skipping row {row_idx}")
-                                    continue
-                            except Exception as e2:
-                                print_with_timestamp(f"      [ERROR] Exception getting row ID: {e2}, skipping row {row_idx}")
-                                continue
-                        
-                        row_expanded = expand_row(driver, class_row_id, reconnect_func=create_reconnect_func)
-                        if row_expanded:
-                            log_import_activity(conn, 'scrape_class_results.py', action='ROW_EXPANDED', 
-                                              additional_info=f'ShowClassID: {show_class_id}, RowID: {class_row_id}')
-                            # Use WebDriverWait instead of fixed sleep for better performance
-                            try:
-                                WebDriverWait(driver, 3).until(
-                                    EC.presence_of_element_located((By.CSS_SELECTOR, "table[id*='grPlacing']"))
-                                )
-                            except:
-                                time.sleep(sleep_short)  # Fallback to short sleep if wait fails
+                    except:
+                        pass
+                
+                if row_idx > len(rows):
+                    print_with_timestamp(f"    [WARNING] Row {row_idx} no longer available (found {len(rows)} rows), skipping")
+                    continue
+                
+                try:
+                    # Re-find the specific row right before use to avoid stale reference
+                    class_row = None
+                    class_row_id = None
+                    max_row_find_retries = 3
+                    for find_retry in range(max_row_find_retries):
+                        try:
+                            # First try to find by stored row ID if available (avoids index shifts after expansions)
+                            if stored_row_id:
+                                try:
+                                    class_row = driver.find_element(By.ID, stored_row_id)
+                                    class_row_id = stored_row_id
+                                    # Validate it's not a detail row
+                                    detail_row_indicators_check = ['grPlacing', 'grNonPlacing', 'dxdt']
+                                    is_detail = any(indicator in class_row_id for indicator in detail_row_indicators_check)
+                                    if not is_detail:
+                                        break  # Successfully found row by ID
+                                except:
+                                    # Row ID not found (might have been removed/changed), fall through to index lookup
+                                    pass
                             
-                            # Re-find the row after expansion (may have changed)
-                            try:
-                                grid = driver.find_element(By.CSS_SELECTOR,
+                            # Fallback to index lookup
+                            if not class_row_id and row_idx <= len(rows):
+                                class_row = rows[row_idx - 1]
+                                class_row_id = class_row.get_attribute('id') or ''
+                                if class_row_id:
+                                    break  # Successfully found row ID
+                            
+                            # If we got here, row wasn't found or has no ID, re-find rows
+                            if find_retry < max_row_find_retries - 1:
+                                time.sleep(0.1)
+                                grid = driver.find_element(By.CSS_SELECTOR, 
                                     "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+                                rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
+                                if not rows:
+                                    all_rows = grid.find_elements(By.TAG_NAME, "tr")
+                                    rows = []
+                                    for r in all_rows:
+                                        try:
+                                            row_id = r.get_attribute('id') or ''
+                                            row_class = r.get_attribute('class') or ''
+                                            # Exclude detail rows (containing grPlacing, grNonPlacing, dxdt), header rows, and filter rows
+                                            detail_row_indicators = ['grPlacing', 'grNonPlacing', 'dxdt']
+                                            is_detail_row = any(indicator in row_id for indicator in detail_row_indicators)
+                                            
+                                            if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and \
+                                               'HeaderRow' not in row_id and 'FilterRow' not in row_id and \
+                                               not is_detail_row:
+                                                rows.append(r)
+                                        except StaleElementReferenceException:
+                                            continue
+                        except StaleElementReferenceException:
+                            # Row reference is stale, re-find rows and retry
+                            if find_retry < max_row_find_retries - 1:
+                                time.sleep(0.1)
+                                grid = driver.find_element(By.CSS_SELECTOR, 
+                                    "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+                                rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
+                                if not rows:
+                                    all_rows = grid.find_elements(By.TAG_NAME, "tr")
+                                    rows = []
+                                    for r in all_rows:
+                                        try:
+                                            row_id = r.get_attribute('id') or ''
+                                            row_class = r.get_attribute('class') or ''
+                                            # Exclude detail rows (containing grPlacing, grNonPlacing, dxdt), header rows, and filter rows
+                                            detail_row_indicators = ['grPlacing', 'grNonPlacing', 'dxdt']
+                                            is_detail_row = any(indicator in row_id for indicator in detail_row_indicators)
+                                            
+                                            if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and \
+                                               'HeaderRow' not in row_id and 'FilterRow' not in row_id and \
+                                               not is_detail_row:
+                                                rows.append(r)
+                                        except StaleElementReferenceException:
+                                            continue
+                            continue
+                    
+                    if not class_row_id:
+                        print_with_timestamp(f"    [WARNING] Row {row_idx} has no ID after {max_row_find_retries} retries, skipping")
+                        continue
+                    
+                    # Validate that this is a main row ID, not a detail row ID
+                    # Detail rows contain: grPlacing, grNonPlacing, dxdt (detail containers), or are in detail grids
+                    detail_row_indicators = ['grPlacing', 'grNonPlacing', 'dxdt']
+                    is_detail_row = any(indicator in class_row_id for indicator in detail_row_indicators)
+                    
+                    if is_detail_row:
+                        print_with_timestamp(f"    [WARNING] Row {row_idx} has detail row ID ({class_row_id[:80]}...), skipping")
+                        print_with_timestamp(f"    [DEBUG] Full row ID: {class_row_id}")
+                        print_with_timestamp(f"    [DEBUG] Found {len(rows)} rows in grid (after filtering detail rows)")
+                        print_with_timestamp(f"    [DEBUG] Looking for row at index {row_idx - 1} in filtered rows array")
+                        continue
+                    
+                    row_id_map[row_idx] = class_row_id
+                    
+                    # Expand the row with retry logic
+                    print_with_timestamp(f"    Expanding row {pass2_idx}/{len(class_data_list)} (row {row_idx})...")
+                    row_expanded = False
+                    max_expand_retries = 3
+                    for expand_retry in range(max_expand_retries):
+                        row_expanded = expand_row(driver, class_row_id, reconnect_func=create_reconnect_func)
+                        
+                        # Check if driver was reconnected during expansion
+                        try:
+                            _ = driver.current_url  # Test if session is still valid
+                        except Exception:
+                            print_with_timestamp(f"    [WARNING] Driver session invalid after expansion, reconnecting...")
+                            new_driver = create_reconnect_func()
+                            if new_driver:
+                                driver = new_driver
+                                # Re-find grid and rows after reconnection
+                                grid = driver.find_element(By.CSS_SELECTOR, 
+                                    "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+                                rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
+                                if not rows:
+                                    all_rows = grid.find_elements(By.TAG_NAME, "tr")
+                                    rows = []
+                                    for r in all_rows:
+                                        row_id = r.get_attribute('id') or ''
+                                        row_class = r.get_attribute('class') or ''
+                                        if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
+                                            rows.append(r)
+                        
+                        if row_expanded:
+                            break
+                        elif expand_retry < max_expand_retries - 1:
+                            print_with_timestamp(f"    [RETRY] Failed to expand row {row_idx}, retrying ({expand_retry + 1}/{max_expand_retries})...")
+                            time.sleep(sleep_medium)  # Wait before retry
+                            # Re-find the row before retrying
+                            try:
+                                grid = driver.find_element(By.CSS_SELECTOR, 
+                                    "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+                                # Try to find row by ID
+                                try:
+                                    row_element = driver.find_element(By.ID, class_row_id)
+                                    if row_element:
+                                        # Row found, continue with retry
+                                        pass
+                                except:
+                                    # Row not found by ID, try to re-find by index
+                                    rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
+                                    if not rows:
+                                        all_rows = grid.find_elements(By.TAG_NAME, "tr")
+                                        rows = []
+                                        for r in all_rows:
+                                            try:
+                                                r_id = r.get_attribute('id') or ''
+                                                r_class = r.get_attribute('class') or ''
+                                                if ('DataRow' in r_id or 'dxgvDataRow' in r_class) and 'HeaderRow' not in r_id and 'FilterRow' not in r_id:
+                                                    rows.append(r)
+                                            except:
+                                                continue
+                            except:
+                                pass
+                    
+                    if not row_expanded:
+                        print_with_timestamp(f"    [WARNING] Failed to expand row {row_idx} after {max_expand_retries} attempts")
+                        failed_rows.append((row_idx, class_row_id))
+                        continue  # Skip to next row if expansion failed
+                    
+                    # Row is expanded, now extract data immediately (before it gets collapsed by next expansion)
+                    print_with_timestamp(f"    [DEBUG] Row {row_idx} expanded successfully, proceeding to extraction...")
+                    # Wait for detail grids to appear and load
+                    try:
+                        # Wait for placing grids to appear near this row
+                        WebDriverWait(driver, 8).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, "table[id*='grPlacing']"))
+                        )
+                        time.sleep(sleep_short)  # Small additional wait after detection
+                    except:
+                        # If grids don't appear, wait a bit anyway
+                        time.sleep(sleep_medium * 2)
+                    
+                    # Extract data for this single row using JavaScript
+                    try:
+                        print_with_timestamp(f"    Extracting data for row {row_idx} (class_row_id: {class_row_id[:60]}...)...")
+                        row_extracted_data = driver.execute_script("""
+                            // Function to extract text from a cell, handling nested elements
+                            function getCellText(cell) {
+                                if (!cell) return '';
+                                var text = '';
+                                for (var i = 0; i < cell.childNodes.length; i++) {
+                                    var node = cell.childNodes[i];
+                                    if (node.nodeType === 3) { // Text node
+                                        text += node.textContent.trim();
+                                    } else if (node.nodeType === 1 && node.tagName !== 'TABLE') {
+                                        var innerText = node.textContent || node.innerText || '';
+                                        if (!node.querySelector('table')) {
+                                            text += innerText.trim();
+                                        }
+                                    }
+                                }
+                                return text.trim() || (cell.textContent || cell.innerText || '').trim();
+                            }
+                            
+                            var classRowId = arguments[0];
+                            var result = {
+                                rowId: classRowId,
+                                placingEntries: [],
+                                nonPlacingEntries: [],
+                                debug: {rowsSearched: 0, detailContainersFound: 0, placingGridsFound: 0, nonPlacingGridsFound: 0, nextRowIds: []}
+                            };
+                            
+                            // Find the class row
+                            var classRow = document.getElementById(classRowId);
+                            if (!classRow) {
+                                result.debug.error = 'Class row not found by ID: ' + classRowId;
+                                return result;
+                            }
+                            
+                            // Find detail containers and grids following this row
+                            var allRows = classRow.parentElement.querySelectorAll('tr');
+                            var classRowIndex = -1;
+                            for (var i = 0; i < allRows.length; i++) {
+                                if (allRows[i].id === classRowId) {
+                                    classRowIndex = i;
+                                    break;
+                                }
+                            }
+                            
+                            if (classRowIndex === -1) {
+                                result.debug.error = 'Class row index not found';
+                                return result;
+                            }
+                            
+                            // Search next 50 rows for detail grids (increased from 20 to handle more complex layouts)
+                            for (var j = classRowIndex + 1; j < allRows.length && j < classRowIndex + 51; j++) {
+                                result.debug.rowsSearched++;
+                                var nextRow = allRows[j];
+                                var nextRowId = nextRow.id || '';
+                                
+                                // Check if this is another class row (stop searching)
+                                // A class row has DataRow in ID but not grPlacing/grNonPlacing/dxdt, and has few cells (typically 2-8)
+                                if (nextRowId.indexOf('DataRow') !== -1 && nextRowId.indexOf('grPlacing') === -1 && 
+                                    nextRowId.indexOf('grNonPlacing') === -1 && nextRowId.indexOf('dxdt') === -1) {
+                                    var cells = nextRow.querySelectorAll('td');
+                                    // Class rows typically have 2-8 cells (Class, Class Name, Entries, Placings, etc.)
+                                    // Detail rows have 10+ cells (Place, Entry, Horse, Rider, etc.)
+                                    if (cells.length <= 8) {
+                                        break; // This is a new class row, stop searching
+                                    }
+                                }
+                                
+                                // Track detail containers
+                                if (nextRowId.indexOf('dxdt') !== -1) {
+                                    result.debug.detailContainersFound++;
+                                    if (result.debug.nextRowIds.length < 5) {
+                                        result.debug.nextRowIds.push(nextRowId.substring(0, 80));
+                                    }
+                                }
+                                
+                                // Look for placing grids (search recursively in this row and all descendants)
+                                var placingGrids = nextRow.querySelectorAll("table[id*='grPlacing']");
+                                if (placingGrids.length > 0) {
+                                    result.debug.placingGridsFound += placingGrids.length;
+                                }
+                                for (var pg = 0; pg < placingGrids.length; pg++) {
+                                    var placingGrid = placingGrids[pg];
+                                    var placingRows = placingGrid.querySelectorAll("tr[id*='DataRow'], tr.dxgvDataRow");
+                                    for (var pr = 0; pr < placingRows.length; pr++) {
+                                        var placingRow = placingRows[pr];
+                                        var prId = placingRow.id || '';
+                                        if (prId.indexOf('HeaderRow') === -1 && prId.indexOf('FilterRow') === -1) {
+                                            var cells = placingRow.querySelectorAll('td');
+                                            if (cells.length >= 10) {
+                                                var entryData = {};
+                                                for (var c = 0; c < cells.length; c++) {
+                                                    entryData['cell_' + c] = getCellText(cells[c]);
+                                                }
+                                                result.placingEntries.push(entryData);
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                // Look for non-placing grids
+                                // First, explicitly look for grNonPlacing tables
+                                var nonPlacingGrids = nextRow.querySelectorAll("table[id*='grNonPlacing']");
+                                for (var npg = 0; npg < nonPlacingGrids.length; npg++) {
+                                    var npGrid = nonPlacingGrids[npg];
+                                    result.debug.nonPlacingGridsFound++;
+                                    var tableRows = npGrid.querySelectorAll("tr[id*='DataRow'], tr.dxgvDataRow");
+                                    for (var nr = 0; nr < tableRows.length; nr++) {
+                                        var nonPlacingRow = tableRows[nr];
+                                        var nrId = nonPlacingRow.id || '';
+                                        if (nrId.indexOf('HeaderRow') === -1 && nrId.indexOf('FilterRow') === -1) {
+                                            var cells = nonPlacingRow.querySelectorAll('td');
+                                            if (cells.length >= 6) {
+                                                var entryData = {};
+                                                for (var c = 0; c < cells.length; c++) {
+                                                    entryData['cell_' + c] = getCellText(cells[c]);
+                                                }
+                                                result.nonPlacingEntries.push(entryData);
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                // Also look for other tables that might contain non-placing entries
+                                // (tables without grPlacing that have rows with 12+ cells)
+                                if (result.nonPlacingEntries.length === 0) {
+                                    var allTables = nextRow.querySelectorAll('table');
+                                    for (var t = 0; t < allTables.length; t++) {
+                                        var table = allTables[t];
+                                        var tableId = table.id || '';
+                                        // Skip placing grids and already processed non-placing grids
+                                        if (tableId.indexOf('grPlacing') !== -1 || tableId.indexOf('grNonPlacing') !== -1) {
+                                            continue;
+                                        }
+                                        var tableRows = table.querySelectorAll("tr[id*='DataRow'], tr.dxgvDataRow");
+                                        if (tableRows.length > 0) {
+                                            var firstRowCells = tableRows[0].querySelectorAll('td');
+                                            if (firstRowCells.length >= 12) {
+                                                result.debug.nonPlacingGridsFound++;
+                                                for (var nr = 0; nr < tableRows.length; nr++) {
+                                                    var nonPlacingRow = tableRows[nr];
+                                                    var nrId = nonPlacingRow.id || '';
+                                                    if (nrId.indexOf('HeaderRow') === -1 && nrId.indexOf('FilterRow') === -1) {
+                                                        var cells = nonPlacingRow.querySelectorAll('td');
+                                                        if (cells.length >= 12) {
+                                                            var entryData = {};
+                                                            for (var c = 0; c < cells.length; c++) {
+                                                                entryData['cell_' + c] = getCellText(cells[c]);
+                                                            }
+                                                            result.nonPlacingEntries.push(entryData);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            return result;
+                        """, class_row_id)
+                        
+                        # Log debug info from JavaScript
+                        if isinstance(row_extracted_data, dict) and 'debug' in row_extracted_data:
+                            debug_info = row_extracted_data['debug']
+                            print_with_timestamp(f"    [DEBUG] JavaScript search: {debug_info.get('rowsSearched', 0)} rows searched, {debug_info.get('detailContainersFound', 0)} detail containers, {debug_info.get('placingGridsFound', 0)} placing grids, {debug_info.get('nonPlacingGridsFound', 0)} non-placing grids")
+                            if 'error' in debug_info:
+                                print_with_timestamp(f"    [DEBUG] JavaScript error: {debug_info['error']}")
+                            if debug_info.get('nextRowIds'):
+                                print_with_timestamp(f"    [DEBUG] Sample next row IDs: {debug_info['nextRowIds']}")
+                        
+                        # Remove debug from extracted data for processing
+                        if isinstance(row_extracted_data, dict) and 'debug' in row_extracted_data:
+                            row_extracted_data = {k: v for k, v in row_extracted_data.items() if k != 'debug'}
+                        
+                        # Get column maps from first grid if not already set
+                        if not entry_column_map or not nonplacing_column_map:
+                            try:
+                                placing_grids = driver.find_elements(By.CSS_SELECTOR, "table[id*='grPlacing']")
+                                if placing_grids and not entry_column_map:
+                                    entry_column_map = get_column_indices_for_entry_grid(placing_grids[0])
+                                    if entry_column_map:
+                                        print_with_timestamp(f"    [DEBUG] Entry column mapping: {entry_column_map}")
+                                
+                                # Try to get non-placing column map from a non-placing grid
+                                if not nonplacing_column_map:
+                                    # Look for a table with 12+ columns that's not a placing grid
+                                    all_tables = driver.find_elements(By.CSS_SELECTOR, "table")
+                                    for table in all_tables:
+                                        table_id = table.get_attribute('id') or ''
+                                        if 'grPlacing' not in table_id:
+                                            try:
+                                                rows = table.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
+                                                if rows:
+                                                    cells = rows[0].find_elements(By.TAG_NAME, "td")
+                                                    if len(cells) >= 12:
+                                                        nonplacing_column_map = get_column_indices_for_nonplacing_grid(table)
+                                                        if nonplacing_column_map:
+                                                            print_with_timestamp(f"    [DEBUG] Non-placing column mapping: {nonplacing_column_map}")
+                                                            break
+                                            except:
+                                                continue
+                            except Exception as e:
+                                print_with_timestamp(f"    [WARNING] Error getting column maps: {e}")
+                        
+                        # Process the extracted data for this row
+                        print_with_timestamp(f"    [DEBUG] Extracted data structure: placingEntries={len(row_extracted_data.get('placingEntries', [])) if row_extracted_data else 0}, nonPlacingEntries={len(row_extracted_data.get('nonPlacingEntries', [])) if row_extracted_data else 0}")
+                        
+                        # Debug: show raw cell data from first placing entry
+                        if row_extracted_data and row_extracted_data.get('placingEntries'):
+                            first_raw = row_extracted_data['placingEntries'][0]
+                            raw_cells = [f"{k}={v[:20] if v else ''}" for k, v in sorted(first_raw.items()) if k.startswith('cell_')][:8]
+                            print_with_timestamp(f"    [DEBUG] First placing raw cells: {raw_cells}")
+                        
+                        # Debug: show raw cell data from first non-placing entry
+                        if row_extracted_data and row_extracted_data.get('nonPlacingEntries'):
+                            first_raw_np = row_extracted_data['nonPlacingEntries'][0]
+                            raw_np_cells = [f"{k}={v[:20] if v else ''}" for k, v in sorted(first_raw_np.items()) if k.startswith('cell_')][:8]
+                            print_with_timestamp(f"    [DEBUG] First non-placing raw cells: {raw_np_cells}")
+                        
+                        # If we have non-placing entries but no column map, try to set it from the extracted data
+                        if row_extracted_data and row_extracted_data.get('nonPlacingEntries') and not nonplacing_column_map:
+                            print_with_timestamp(f"    [DEBUG] Non-placing entries found but column map missing, attempting to set from extracted data...")
+                            # Try to find a non-placing grid on the page to get column mapping
+                            try:
+                                all_tables = driver.find_elements(By.CSS_SELECTOR, "table")
+                                for table in all_tables:
+                                    table_id = table.get_attribute('id') or ''
+                                    if 'grPlacing' not in table_id:
+                                        try:
+                                            rows = table.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
+                                            if rows:
+                                                cells = rows[0].find_elements(By.TAG_NAME, "td")
+                                                if len(cells) >= 12:
+                                                    nonplacing_column_map = get_column_indices_for_nonplacing_grid(table)
+                                                    if nonplacing_column_map:
+                                                        print_with_timestamp(f"    [DEBUG] Non-placing column mapping set from grid: {nonplacing_column_map}")
+                                                        break
+                                        except:
+                                            continue
+                            except Exception as e:
+                                print_with_timestamp(f"    [WARNING] Error setting non-placing column map: {e}")
+                        
+                        # If still no column map but we have non-placing entries, use default mapping
+                        if row_extracted_data and row_extracted_data.get('nonPlacingEntries') and not nonplacing_column_map:
+                            print_with_timestamp(f"    [DEBUG] Using default non-placing column mapping (column map not found)")
+                            # Use default positional mapping for non-placing entries (12 columns)
+                            nonplacing_column_map = {
+                                'Entry': 0,
+                                'Horse': 1,
+                                'Rider': 2,
+                                'Country': 3,
+                                'Owner': 4,
+                                'Trainer': 5,
+                                'Prize': 6,
+                                'Start': 7,
+                                'Score': 8,
+                                'Percent': 9,
+                                'USEF': 10,
+                                'EC': 11,
+                                'Place': None,  # Will be set to 0
+                                'AddBack': None,  # Will be set to '$0.00'
+                            }
+                        
+                        if row_extracted_data and (row_extracted_data.get('placingEntries') or row_extracted_data.get('nonPlacingEntries')):
+                            # Get class details for validation
+                            try:
+                                cursor = conn.cursor()
+                                cursor.execute("""
+                                    SELECT Entries, Placings, ISNULL(NonPlacingComplete, 0) 
+                                    FROM sResults.ShowClass 
+                                    WHERE ID = ?
+                                """, show_class_id)
+                                class_row_data = cursor.fetchone()
+                                max_entries = class_row_data[0] if class_row_data and class_row_data[0] is not None else None
+                                max_placings = class_row_data[1] if class_row_data and class_row_data[1] is not None else None
+                                nonplacing_complete = class_row_data[2] if class_row_data and class_row_data[2] is not None else 0
+                                cursor.close()
+                            except:
+                                max_entries = None
+                                max_placings = None
+                                nonplacing_complete = 0
+                            
+                            # Process placing entries
+                            placing_entries = row_extracted_data.get('placingEntries', [])
+                            if placing_entries and entry_column_map:
+                                # Process and save placing entries (similar to existing code)
+                                all_entry_details = []
+                                for entry_data in placing_entries:
+                                    entry_details = {}
+                                    for field, idx in entry_column_map.items():
+                                        if idx is not None:
+                                            cell_key = f'cell_{idx}'
+                                            entry_details[field] = entry_data.get(cell_key, '').strip()
+                                        else:
+                                            entry_details[field] = ''
+                                    if entry_details:
+                                        all_entry_details.append(entry_details)
+                                
+                                # Debug: show first entry to verify column mapping
+                                if all_entry_details:
+                                    first_entry = all_entry_details[0]
+                                    print_with_timestamp(f"    [DEBUG] First placing entry: Place={first_entry.get('Place')}, Entry={first_entry.get('Entry')}, Horse={first_entry.get('Horse', '')[:30]}")
+                                
+                                if all_entry_details:
+                                    saved_entries = 0
+                                    skipped_duplicates = 0
+                                    cursor = conn.cursor()
+                                    try:
+                                        for entry_details in all_entry_details:
+                                            result = save_show_result_to_database(conn, show_class_id, entry_details, cursor=cursor, commit=False)
+                                            if result:
+                                                saved_entries += 1
+                                                results_count += 1
+                                            else:
+                                                skipped_duplicates += 1
+                                        conn.commit()
+                                        print_with_timestamp(f"      Saved {saved_entries}/{len(all_entry_details)} placing entries (skipped {skipped_duplicates} duplicates)")
+                                    except Exception as e:
+                                        conn.rollback()
+                                        print_with_timestamp(f"      [WARNING] Error saving placing entries: {e}")
+                                    finally:
+                                        cursor.close()
+                            
+                            # Process non-placing entries
+                            if max_entries and max_placings and max_entries > max_placings and not nonplacing_complete:
+                                nonplacing_count = max_entries - max_placings
+                                nonplacing_entries = row_extracted_data.get('nonPlacingEntries', [])
+                                print_with_timestamp(f"    [DEBUG] Non-placing check: max_entries={max_entries}, max_placings={max_placings}, nonplacing_count={nonplacing_count}, nonplacing_complete={nonplacing_complete}")
+                                print_with_timestamp(f"    [DEBUG] Non-placing entries found: {len(nonplacing_entries) if nonplacing_entries else 0}, column_map_set={nonplacing_column_map is not None}")
+                                if nonplacing_entries:
+                                    if not nonplacing_column_map:
+                                        print_with_timestamp(f"    [WARNING] Non-placing entries found but column map is missing - cannot process")
+                                    else:
+                                        # Process and save non-placing entries (similar to existing code)
+                                        all_nonplacing_details = []
+                                        seen_nonplacing_entries = set()
+                                        for entry_data in nonplacing_entries:
+                                            entry_details = {}
+                                            entry_details['Place'] = '0'
+                                            entry_details['AddBack'] = '$0.00'
+                                            for field, idx in nonplacing_column_map.items():
+                                                if field in ['Place', 'AddBack']:
+                                                    continue
+                                                if idx is not None:
+                                                    cell_key = f'cell_{idx}'
+                                                    entry_details[field] = entry_data.get(cell_key, '').strip()
+                                                else:
+                                                    entry_details[field] = ''
+                                            
+                                            # Create unique key to avoid duplicates
+                                            entry_key = (entry_details.get('Horse', ''), entry_details.get('Rider', ''))
+                                            if entry_key not in seen_nonplacing_entries and entry_key[0]:
+                                                seen_nonplacing_entries.add(entry_key)
+                                                all_nonplacing_details.append(entry_details)
+                                        
+                                        # Debug: show first non-placing entry to verify column mapping
+                                        if all_nonplacing_details:
+                                            first_np = all_nonplacing_details[0]
+                                            print_with_timestamp(f"    [DEBUG] First non-placing entry: Entry={first_np.get('Entry')}, Horse={first_np.get('Horse', '')[:30]}, Rider={first_np.get('Rider', '')[:30]}")
+                                        
+                                        if all_nonplacing_details:
+                                            saved_nonplacing = 0
+                                            skipped_np_duplicates = 0
+                                            cursor = conn.cursor()
+                                            try:
+                                                for entry_details in all_nonplacing_details[:nonplacing_count]:
+                                                    result = save_show_result_to_database(conn, show_class_id, entry_details, cursor=cursor, commit=False)
+                                                    if result:
+                                                        saved_nonplacing += 1
+                                                        results_count += 1
+                                                    else:
+                                                        skipped_np_duplicates += 1
+                                                conn.commit()
+                                                print_with_timestamp(f"      Saved {saved_nonplacing}/{len(all_nonplacing_details)} non-placing entries (expected: {nonplacing_count}, skipped {skipped_np_duplicates} duplicates)")
+                                                
+                                                # Mark class as complete if we got all expected entries
+                                                # Also mark complete if entries were skipped as duplicates (they already exist)
+                                                total_processed = saved_nonplacing + skipped_np_duplicates
+                                                if total_processed >= nonplacing_count:
+                                                    cursor.execute("""
+                                                        UPDATE sResults.ShowClass 
+                                                        SET NonPlacingComplete = 1 
+                                                        WHERE ID = ?
+                                                    """, show_class_id)
+                                                    conn.commit()
+                                                    if saved_nonplacing > 0:
+                                                        print_with_timestamp(f"      [OK] Marked class as complete ({saved_nonplacing} saved, {skipped_np_duplicates} already existed)")
+                                                    else:
+                                                        print_with_timestamp(f"      [OK] Marked class as complete (all {skipped_np_duplicates} entries already existed)")
+                                            except Exception as e:
+                                                conn.rollback()
+                                                print_with_timestamp(f"      [WARNING] Error saving non-placing entries: {e}")
+                                            finally:
+                                                cursor.close()
+                                else:
+                                    if max_entries and max_placings and max_entries > max_placings:
+                                        print_with_timestamp(f"    [DEBUG] No non-placing entries extracted (expected {max_entries - max_placings})")
+                        
+                        # Collapse the row before moving to next
+                        try:
+                            collapse_row(driver, class_row_id, reconnect_func=create_reconnect_func)
+                            time.sleep(sleep_short)  # Small delay after collapse
+                        except Exception as e:
+                            print_with_timestamp(f"    [WARNING] Error collapsing row {row_idx}: {e}")
+                            # Continue anyway
+                        
+                        # Only increment processed_count after successful extraction and collapse
+                        processed_count += 1
+                    
+                    except Exception as e:
+                        print_with_timestamp(f"    [WARNING] Error extracting data for row {row_idx}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        # Try to collapse anyway
+                        try:
+                            collapse_row(driver, class_row_id, reconnect_func=create_reconnect_func)
+                        except:
+                            pass
+                
+                except Exception as e:
+                    print_with_timestamp(f"    [WARNING] Error expanding row {row_idx}: {e}")
+                    # Check if error was due to invalid session
+                    try:
+                        _ = driver.current_url
+                    except Exception:
+                        print_with_timestamp(f"    [WARNING] Driver session invalid after error, reconnecting...")
+                        new_driver = create_reconnect_func()
+                        if new_driver:
+                            driver = new_driver
+                            # Re-find grid and rows after reconnection
+                            grid = driver.find_element(By.CSS_SELECTOR, 
+                                "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+                            rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
+                            if not rows:
                                 all_rows = grid.find_elements(By.TAG_NAME, "tr")
                                 rows = []
                                 for r in all_rows:
@@ -2878,939 +3821,65 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                                     row_class = r.get_attribute('class') or ''
                                     if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
                                         rows.append(r)
-                                
-                                if row_idx <= len(rows):
-                                    class_row = rows[row_idx - 1]
-                            except:
-                                pass
-                            
-                            # Find detail rows (typically nested table or additional rows after expansion)
-                            # Look for detail rows that appear after expansion
-                            # DevExpress often uses a pattern like: DataRow -> DetailRow
-                            detail_rows = []
-                            
-                            # Try multiple strategies to find detail rows (with retry on stale element and reconnection)
-                            max_strategy_retries = 3
-                            strategy_retry_delay = 0.5
-                            strategy_success = False
-                            driver_reconnected = False
-                            
-                            for strategy_attempt in range(max_strategy_retries):
-                                if strategy_success:
-                                    break
-                                
-                                try:
-                                    # On second retry or later, try reconnecting browser if stale elements persist
-                                    if strategy_attempt > 0 and not driver_reconnected:
-                                        print_with_timestamp(f"      [RETRY] Attempting browser reconnection before retry {strategy_attempt + 1}/{max_strategy_retries}...")
-                                        new_driver = reconnect_browser_and_navigate(driver, show_guid, year, show_name)
-                                        if new_driver:
-                                            driver = new_driver
-                                            driver_reconnected = True
-                                            # Re-find grid and rows after reconnection
-                                            grid = driver.find_element(By.CSS_SELECTOR,
-                                                "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
-                                            rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
-                                            if not rows:
-                                                all_rows = grid.find_elements(By.TAG_NAME, "tr")
-                                                rows = []
-                                                for r in all_rows:
-                                                    row_id = r.get_attribute('id') or ''
-                                                    row_class = r.get_attribute('class') or ''
-                                                    if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
-                                                        rows.append(r)
-                                            
-                                            if row_idx <= len(rows):
-                                                class_row = rows[row_idx - 1]
-                                                class_row_id = class_row.get_attribute('id') or ''
-                                                # Re-expand the row after reconnection
-                                                print_with_timestamp(f"      [RECONNECT] Re-expanding row after browser reconnection...")
-                                                expand_row(driver, class_row_id, reconnect_func=create_reconnect_func)
-                                                time.sleep(sleep_medium)
-                                    
-                                    # Strategy 1: Look for grPlacing grids (nested result grids) following the class row
-                                    # Always re-find grid and class_row to avoid stale elements - rebuild all references from scratch
-                                    try:
-                                        grid = driver.find_element(By.CSS_SELECTOR,
-                                            "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
-                                        all_trs = grid.find_elements(By.TAG_NAME, "tr")
-                                        
-                                        # Re-find class_row by row_idx to get fresh reference
-                                        rows_refresh = []
-                                        for r in all_trs:
-                                            try:
-                                                row_id_refresh = r.get_attribute('id') or ''
-                                                row_class_refresh = r.get_attribute('class') or ''
-                                                if ('DataRow' in row_id_refresh or 'dxgvDataRow' in row_class_refresh) and 'HeaderRow' not in row_id_refresh and 'FilterRow' not in row_id_refresh:
-                                                    rows_refresh.append(r)
-                                            except StaleElementReferenceException:
-                                                continue
-                                        
-                                        if row_idx <= len(rows_refresh):
-                                            class_row_refresh = rows_refresh[row_idx - 1]
-                                            current_class_row_id = class_row_refresh.get_attribute('id') or ''
-                                            # Update class_row reference for consistency
-                                            class_row = class_row_refresh
-                                        else:
-                                            print_with_timestamp(f"      Strategy 1: Row index {row_idx} out of range (found {len(rows_refresh)} rows)")
-                                            current_class_row_id = None
-                                    except Exception as e:
-                                        print_with_timestamp(f"      Strategy 1 error re-finding elements: {e}")
-                                        current_class_row_id = None
-                                    
-                                    if not current_class_row_id:
-                                        print_with_timestamp(f"      Strategy 1: Could not find class row, skipping this attempt...")
-                                        # Don't continue - let it fall through to Strategy 2
-                                        pass
-                                    else:
-                                    
-                                        # Find the class row index in all_trs
-                                        class_row_idx = -1
-                                        for i, tr in enumerate(all_trs):
-                                            try:
-                                                tr_id = tr.get_attribute('id') or ''
-                                                if tr_id == current_class_row_id:
-                                                    class_row_idx = i
-                                                    break
-                                            except StaleElementReferenceException:
-                                                continue
-                                            except Exception:
-                                                continue
-                                        
-                                        if class_row_idx >= 0:
-                                            # Look for the next tr(s) that contain grPlacing grids
-                                            for i in range(class_row_idx + 1, len(all_trs)):
-                                                try:
-                                                    next_tr = all_trs[i]
-                                                    next_tr_id = next_tr.get_attribute('id') or ''
-                                                    next_tr_class = next_tr.get_attribute('class') or ''
-                                                    
-                                                    # If this is another class row (has DataRow but not in detail container), stop
-                                                    if 'DataRow' in next_tr_id and 'dxdt' not in next_tr_id and 'dxgvDetailRow' not in next_tr_class:
-                                                        # Verify it's actually a class row by checking cell structure
-                                                        cells = next_tr.find_elements(By.TAG_NAME, "td")
-                                                        if len(cells) >= 2:
-                                                            # Class rows typically have a class number in early cells
-                                                            break
-                                                    
-                                                    # Look for grPlacing grids (nested result grids) in this row
-                                                    placing_grids = next_tr.find_elements(By.CSS_SELECTOR, "table[id*='grPlacing']")
-                                                    for placing_grid in placing_grids:
-                                                        # Store reference to the grid for column mapping
-                                                        placing_grid_table = placing_grid
-                                                        # Find data rows in the placing grid
-                                                        placing_rows = placing_grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow'], tr.dxgvDataRow")
-                                                        for pr in placing_rows:
-                                                            pr_id = pr.get_attribute('id') or ''
-                                                            pr_cells = pr.find_elements(By.TAG_NAME, "td")
-                                                            # Result rows have many columns (Place, Entry, Horse, Rider, Owner, Trainer, etc.)
-                                                            if len(pr_cells) >= 10 and 'HeaderRow' not in pr_id and 'FilterRow' not in pr_id:
-                                                                # Store tuple of (row, grid_table) for column mapping
-                                                                detail_rows.append((pr, placing_grid_table))
-                                                except StaleElementReferenceException:
-                                                    # Skip this row if it becomes stale
-                                                    continue
-                                                except Exception:
-                                                    # Skip this row on other errors
-                                                    continue
-                                            
-                                            if detail_rows:
-                                                print_with_timestamp(f"      Strategy 1 found {len(detail_rows)} detail rows in grPlacing grids")
-                                                strategy_success = True
-                                                break
-                                except StaleElementReferenceException as e:
-                                    if strategy_attempt < max_strategy_retries - 1:
-                                        print_with_timestamp(f"      Strategy 1 stale element (attempt {strategy_attempt + 1}/{max_strategy_retries}), attempting browser reconnection...")
-                                        
-                                        # Immediately attempt browser reconnection on stale element
-                                        if not driver_reconnected:
-                                            try:
-                                                new_driver = reconnect_browser_and_navigate(driver, show_guid, year, show_name)
-                                                if new_driver:
-                                                    driver = new_driver
-                                                    driver_reconnected = True
-                                                    
-                                                    # Re-find ALL elements from scratch after reconnection
-                                                    print_with_timestamp(f"      [RECONNECT] Re-establishing context after browser reconnection...")
-                                                    grid = driver.find_element(By.CSS_SELECTOR,
-                                                        "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
-                                                    all_rows_reconnect = grid.find_elements(By.TAG_NAME, "tr")
-                                                    rows_reconnect = []
-                                                    for r in all_rows_reconnect:
-                                                        row_id_reconnect = r.get_attribute('id') or ''
-                                                        row_class_reconnect = r.get_attribute('class') or ''
-                                                        if ('DataRow' in row_id_reconnect or 'dxgvDataRow' in row_class_reconnect) and 'HeaderRow' not in row_id_reconnect and 'FilterRow' not in row_id_reconnect:
-                                                            rows_reconnect.append(r)
-                                                    
-                                                    if row_idx <= len(rows_reconnect):
-                                                        class_row = rows_reconnect[row_idx - 1]  # Fresh reference
-                                                        class_row_id = class_row.get_attribute('id') or ''
-                                                        # Re-expand the row after reconnection
-                                                        print_with_timestamp(f"      [RECONNECT] Re-expanding row {row_idx} after browser reconnection...")
-                                                        expand_row(driver, class_row_id, reconnect_func=create_reconnect_func)
-                                                        time.sleep(sleep_long)  # Longer wait after reconnection
-                                                        print_with_timestamp(f"      Retrying Strategy 1 after reconnection...")
-                                                        detail_rows = []  # Reset for retry
-                                                        continue  # Continue to next iteration with fresh elements
-                                                    else:
-                                                        print_with_timestamp(f"      [ERROR] Row {row_idx} no longer available after reconnection")
-                                                        break
-                                                else:
-                                                    print_with_timestamp(f"      [WARNING] Browser reconnection failed, retrying without reconnection...")
-                                                    time.sleep(strategy_retry_delay)
-                                                    detail_rows = []  # Reset for retry
-                                                    continue
-                                            except Exception as reconnect_error:
-                                                print_with_timestamp(f"      [WARNING] Error during browser reconnection: {reconnect_error}")
-                                                time.sleep(strategy_retry_delay)
-                                                detail_rows = []  # Reset for retry
-                                                continue
-                                        else:
-                                            # Already reconnected, but still getting stale elements - try to refresh elements one more time
-                                            print_with_timestamp(f"      Browser already reconnected, refreshing element references...")
-                                            try:
-                                                grid = driver.find_element(By.CSS_SELECTOR,
-                                                    "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
-                                                all_rows_refresh = grid.find_elements(By.TAG_NAME, "tr")
-                                                rows_refresh = []
-                                                for r in all_rows_refresh:
-                                                    row_id_refresh = r.get_attribute('id') or ''
-                                                    row_class_refresh = r.get_attribute('class') or ''
-                                                    if ('DataRow' in row_id_refresh or 'dxgvDataRow' in row_class_refresh) and 'HeaderRow' not in row_id_refresh and 'FilterRow' not in row_id_refresh:
-                                                        rows_refresh.append(r)
-                                                
-                                                if row_idx <= len(rows_refresh):
-                                                    class_row = rows_refresh[row_idx - 1]  # Fresh reference
-                                                    class_row_id = class_row.get_attribute('id') or ''
-                                                    # Re-expand to ensure row is expanded
-                                                    expand_row(driver, class_row_id, reconnect_func=create_reconnect_func)
-                                                    time.sleep(sleep_medium)
-                                            except Exception as refresh_error:
-                                                print_with_timestamp(f"      [WARNING] Error refreshing elements: {refresh_error}")
-                                            
-                                            time.sleep(strategy_retry_delay)
-                                            detail_rows = []  # Reset for retry
-                                            continue  # Continue to next iteration
-                                    else:
-                                        print_with_timestamp(f"      Strategy 1 error (final attempt): {e}")
-                                        break  # Break out of loop on final attempt
-                                except Exception as e:
-                                    print_with_timestamp(f"      Strategy 1 error: {e}")
-                                
-                                    # Strategy 2: Look for nested grid (grPlacing) inside detail container following the class row
-                                    if not detail_rows:
-                                        try:
-                                            # Re-find grid and all rows
-                                            grid = driver.find_element(By.CSS_SELECTOR,
-                                                "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
-                                            all_rows = grid.find_elements(By.TAG_NAME, "tr")
-                                            
-                                            # Find current row index
-                                            current_idx = -1
-                                            class_row_id = class_row.get_attribute('id') or ''
-                                            for i, r in enumerate(all_rows):
-                                                if r.get_attribute('id') == class_row_id:
-                                                    current_idx = i
-                                                    break
-                                            
-                                            if current_idx >= 0:
-                                                # Look for the detail container row that follows this class row
-                                                # Detail containers typically have IDs like dxdt1, dxdt2, etc.
-                                                for i in range(current_idx + 1, len(all_rows)):
-                                                    next_row = all_rows[i]
-                                                    next_row_id = next_row.get_attribute('id') or ''
-                                                    next_row_class = next_row.get_attribute('class') or ''
-                                                    
-                                                    # If this is another class row, stop
-                                                    if 'DataRow' in next_row_id and 'dxdt' not in next_row_id and 'Detail' not in next_row_id.lower() and 'dxgvDetailRow' not in next_row_class:
-                                                        # Check if it's actually a class row by looking for class number in first cells
-                                                        cells = next_row.find_elements(By.TAG_NAME, "td")
-                                                        if len(cells) >= 2:
-                                                            # Skip detail button cell
-                                                            cell_text = cells[1].text.strip() if len(cells) > 1 else ''
-                                                            # If it looks like a class number (numeric), it's a new class row
-                                                            if cell_text and (cell_text.isdigit() or cell_text == ''):
-                                                                break
-                                                    
-                                                    # Look for nested grids (grPlacing) inside this row
-                                                    nested_grids = next_row.find_elements(By.CSS_SELECTOR, "table[id*='grPlacing']")
-                                                    for nested_grid in nested_grids:
-                                                        # Store reference to the grid for column mapping
-                                                        placing_grid_table = nested_grid
-                                                        # Find data rows in the nested grid
-                                                        nested_rows = nested_grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow'], tr.dxgvDataRow")
-                                                        for nr in nested_rows:
-                                                            nr_id = nr.get_attribute('id') or ''
-                                                            nr_class = nr.get_attribute('class') or ''
-                                                            cells = nr.find_elements(By.TAG_NAME, "td")
-                                                            # Result rows have many columns (Place, Entry, Horse, Rider, etc.)
-                                                            if len(cells) >= 10 and 'HeaderRow' not in nr_id and 'FilterRow' not in nr_id:
-                                                                # Store tuple of (row, grid_table) for column mapping
-                                                                detail_rows.append((nr, placing_grid_table))
-                                                
-                                                if detail_rows:
-                                                    print_with_timestamp(f"      Strategy 2 found {len(detail_rows)} detail rows (checked {len(all_rows)} total rows, started at index {current_idx})")
-                                                    strategy_success = True
-                                                    break
-                                        except StaleElementReferenceException as e:
-                                            if strategy_attempt < max_strategy_retries - 1:
-                                                print_with_timestamp(f"      Strategy 2 stale element (attempt {strategy_attempt + 1}/{max_strategy_retries}), attempting browser reconnection...")
-                                                
-                                                # Immediately attempt browser reconnection on stale element
-                                                if not driver_reconnected:
-                                                    try:
-                                                        new_driver = reconnect_browser_and_navigate(driver, show_guid, year, show_name)
-                                                        if new_driver:
-                                                            driver = new_driver
-                                                            driver_reconnected = True
-                                                            # Re-find grid and rows after reconnection
-                                                            grid = driver.find_element(By.CSS_SELECTOR,
-                                                                "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
-                                                            rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
-                                                            if not rows:
-                                                                all_rows = grid.find_elements(By.TAG_NAME, "tr")
-                                                                rows = []
-                                                                for r in all_rows:
-                                                                    row_id = r.get_attribute('id') or ''
-                                                                    row_class = r.get_attribute('class') or ''
-                                                                    if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
-                                                                        rows.append(r)
-                                                            
-                                                            if row_idx <= len(rows):
-                                                                class_row = rows[row_idx - 1]
-                                                                class_row_id = class_row.get_attribute('id') or ''
-                                                                # Re-expand the row after reconnection
-                                                                print_with_timestamp(f"      [RECONNECT] Re-expanding row after browser reconnection...")
-                                                                expand_row(driver, class_row_id, reconnect_func=create_reconnect_func)
-                                                                time.sleep(sleep_medium)
-                                                                print_with_timestamp(f"      Retrying Strategy 2 after reconnection...")
-                                                            else:
-                                                                print_with_timestamp(f"      [ERROR] Row {row_idx} no longer available after reconnection")
-                                                                break
-                                                        else:
-                                                            print_with_timestamp(f"      [WARNING] Browser reconnection failed, retrying without reconnection...")
-                                                            time.sleep(strategy_retry_delay)
-                                                    except Exception as reconnect_error:
-                                                        print_with_timestamp(f"      [WARNING] Error during browser reconnection: {reconnect_error}")
-                                                        time.sleep(strategy_retry_delay)
-                                                else:
-                                                    print_with_timestamp(f"      Browser already reconnected, retrying...")
-                                                    time.sleep(strategy_retry_delay)
-                                                
-                                                detail_rows = []  # Reset for retry
-                                                continue  # Continue to next iteration instead of raising
-                                            else:
-                                                print_with_timestamp(f"      Strategy 2 error (final attempt): {e}")
-                                                break  # Break out of loop on final attempt
-                                        except Exception as e:
-                                            print_with_timestamp(f"      Strategy 2 error: {e}")
-                                
-                                    # Strategy 3: Look for nested table within the row
-                                    if not detail_rows:
-                                        try:
-                                            nested_tables = class_row.find_elements(By.TAG_NAME, "table")
-                                            print_with_timestamp(f"      Strategy 3: Found {len(nested_tables)} nested tables")
-                                            for nested_table in nested_tables:
-                                                nested_rows = nested_table.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow'], tr.dxgvDataRow, tr")
-                                                # Filter out header rows
-                                                filtered_rows = []
-                                                for nr in nested_rows:
-                                                    nr_class = nr.get_attribute('class') or ''
-                                                    nr_id = nr.get_attribute('id') or ''
-                                                    if 'HeaderRow' not in nr_id and 'FilterRow' not in nr_id:
-                                                        cells = nr.find_elements(By.TAG_NAME, "td")
-                                                        if len(cells) >= 3:  # Has enough cells to be a data row
-                                                            filtered_rows.append(nr)
-                                                if filtered_rows:
-                                                    detail_rows = filtered_rows
-                                                    print_with_timestamp(f"      Strategy 3 found {len(detail_rows)} detail rows in nested table")
-                                                    strategy_success = True
-                                                    break
-                                        except StaleElementReferenceException as e:
-                                            if strategy_attempt < max_strategy_retries - 1:
-                                                print_with_timestamp(f"      Strategy 3 stale element (attempt {strategy_attempt + 1}/{max_strategy_retries}), attempting browser reconnection...")
-                                                
-                                                # Immediately attempt browser reconnection on stale element
-                                                if not driver_reconnected:
-                                                    try:
-                                                        new_driver = reconnect_browser_and_navigate(driver, show_guid, year, show_name)
-                                                        if new_driver:
-                                                            driver = new_driver
-                                                            driver_reconnected = True
-                                                            # Re-find grid and rows after reconnection
-                                                            grid = driver.find_element(By.CSS_SELECTOR,
-                                                                "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
-                                                            rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
-                                                            if not rows:
-                                                                all_rows = grid.find_elements(By.TAG_NAME, "tr")
-                                                                rows = []
-                                                                for r in all_rows:
-                                                                    row_id = r.get_attribute('id') or ''
-                                                                    row_class = r.get_attribute('class') or ''
-                                                                    if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
-                                                                        rows.append(r)
-                                                            
-                                                            if row_idx <= len(rows):
-                                                                class_row = rows[row_idx - 1]
-                                                                class_row_id = class_row.get_attribute('id') or ''
-                                                                # Re-expand the row after reconnection
-                                                                print_with_timestamp(f"      [RECONNECT] Re-expanding row after browser reconnection...")
-                                                                expand_row(driver, class_row_id, reconnect_func=create_reconnect_func)
-                                                                time.sleep(sleep_medium)
-                                                                print_with_timestamp(f"      Retrying Strategy 3 after reconnection...")
-                                                            else:
-                                                                print_with_timestamp(f"      [ERROR] Row {row_idx} no longer available after reconnection")
-                                                                break
-                                                        else:
-                                                            print_with_timestamp(f"      [WARNING] Browser reconnection failed, retrying without reconnection...")
-                                                            time.sleep(strategy_retry_delay)
-                                                    except Exception as reconnect_error:
-                                                        print_with_timestamp(f"      [WARNING] Error during browser reconnection: {reconnect_error}")
-                                                        time.sleep(strategy_retry_delay)
-                                                else:
-                                                    print_with_timestamp(f"      Browser already reconnected, retrying...")
-                                                    time.sleep(strategy_retry_delay)
-                                                
-                                                detail_rows = []  # Reset for retry
-                                                continue  # Continue to next iteration instead of raising
-                                            else:
-                                                print_with_timestamp(f"      Strategy 3 error (final attempt): {e}")
-                                                break  # Break out of loop on final attempt
-                                        except Exception as e:
-                                            print_with_timestamp(f"      Strategy 3 error: {e}")
-                                
-                                    # Strategy 4: Look for detail rows by checking following siblings more broadly
-                                    if not detail_rows:
-                                        try:
-                                            grid = driver.find_element(By.CSS_SELECTOR,
-                                                "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
-                                            all_rows = grid.find_elements(By.TAG_NAME, "tr")
-                                            class_row_id = class_row.get_attribute('id') or ''
-                                            current_idx = -1
-                                            for i, r in enumerate(all_rows):
-                                                if r.get_attribute('id') == class_row_id:
-                                                    current_idx = i
-                                                    break
-                                            
-                                            if current_idx >= 0:
-                                                # Look for the next 10 rows to find detail rows
-                                                for i in range(current_idx + 1, min(current_idx + 11, len(all_rows))):
-                                                    next_row = all_rows[i]
-                                                    cells = next_row.find_elements(By.TAG_NAME, "td")
-                                                    next_row_id = next_row.get_attribute('id') or ''
-                                                    next_row_class = next_row.get_attribute('class') or ''
-                                                    
-                                                    # If this row has many cells (like a data row) and isn't a header
-                                                    if len(cells) >= 10 and 'HeaderRow' not in next_row_id and 'FilterRow' not in next_row_id:
-                                                        # Check if this could be a detail row by checking if it has Place/Entry/Horse columns
-                                                        row_text = next_row.text.lower()
-                                                        # Detail rows typically don't have class numbers but have placement info
-                                                        if any(keyword in row_text for keyword in ['place', 'entry', 'horse', 'rider']):
-                                                            detail_rows.append(next_row)
-                                                    # Stop if we hit another class row
-                                                    elif 'DataRow' in next_row_id and 'Detail' not in next_row_id and current_idx != i:
-                                                        break
-                                                
-                                                if detail_rows:
-                                                    print_with_timestamp(f"      Strategy 4 found {len(detail_rows)} detail rows")
-                                                    strategy_success = True
-                                                    break
-                                        except StaleElementReferenceException as e:
-                                            if strategy_attempt < max_strategy_retries - 1:
-                                                print_with_timestamp(f"      Strategy 4 stale element (attempt {strategy_attempt + 1}/{max_strategy_retries}), attempting browser reconnection...")
-                                                
-                                                # Immediately attempt browser reconnection on stale element
-                                                if not driver_reconnected:
-                                                    try:
-                                                        new_driver = reconnect_browser_and_navigate(driver, show_guid, year, show_name)
-                                                        if new_driver:
-                                                            driver = new_driver
-                                                            driver_reconnected = True
-                                                            # Re-find grid and rows after reconnection
-                                                            grid = driver.find_element(By.CSS_SELECTOR,
-                                                                "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
-                                                            rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
-                                                            if not rows:
-                                                                all_rows = grid.find_elements(By.TAG_NAME, "tr")
-                                                                rows = []
-                                                                for r in all_rows:
-                                                                    row_id = r.get_attribute('id') or ''
-                                                                    row_class = r.get_attribute('class') or ''
-                                                                    if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
-                                                                        rows.append(r)
-                                                            
-                                                            if row_idx <= len(rows):
-                                                                class_row = rows[row_idx - 1]
-                                                                class_row_id = class_row.get_attribute('id') or ''
-                                                                # Re-expand the row after reconnection
-                                                                print_with_timestamp(f"      [RECONNECT] Re-expanding row after browser reconnection...")
-                                                                expand_row(driver, class_row_id, reconnect_func=create_reconnect_func)
-                                                                time.sleep(sleep_medium)
-                                                                print_with_timestamp(f"      Retrying Strategy 4 after reconnection...")
-                                                            else:
-                                                                print_with_timestamp(f"      [ERROR] Row {row_idx} no longer available after reconnection")
-                                                                break
-                                                        else:
-                                                            print_with_timestamp(f"      [WARNING] Browser reconnection failed, retrying without reconnection...")
-                                                            time.sleep(strategy_retry_delay)
-                                                    except Exception as reconnect_error:
-                                                        print_with_timestamp(f"      [WARNING] Error during browser reconnection: {reconnect_error}")
-                                                        time.sleep(strategy_retry_delay)
-                                                else:
-                                                    print_with_timestamp(f"      Browser already reconnected, retrying...")
-                                                    time.sleep(strategy_retry_delay)
-                                                
-                                                detail_rows = []  # Reset for retry
-                                                continue  # Continue to next iteration instead of raising
-                                            else:
-                                                print_with_timestamp(f"      Strategy 4 error (final attempt): {e}")
-                                                break  # Break out of loop on final attempt
-                                        except Exception as e:
-                                            print_with_timestamp(f"      Strategy 4 error: {e}")
-                                
-                                except StaleElementReferenceException as e:
-                                    # Outer catch for any stale element in strategies 1-4
-                                    if strategy_attempt < max_strategy_retries - 1:
-                                        print_with_timestamp(f"      Stale element in strategies (attempt {strategy_attempt + 1}/{max_strategy_retries}), attempting browser reconnection...")
-                                        
-                                        # Immediately attempt browser reconnection on stale element
-                                        if not driver_reconnected:
-                                            try:
-                                                new_driver = reconnect_browser_and_navigate(driver, show_guid, year, show_name)
-                                                if new_driver:
-                                                    driver = new_driver
-                                                    driver_reconnected = True
-                                                    # Re-find grid and rows after reconnection
-                                                    grid = driver.find_element(By.CSS_SELECTOR,
-                                                        "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
-                                                    rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
-                                                    if not rows:
-                                                        all_rows = grid.find_elements(By.TAG_NAME, "tr")
-                                                        rows = []
-                                                        for r in all_rows:
-                                                            row_id = r.get_attribute('id') or ''
-                                                            row_class = r.get_attribute('class') or ''
-                                                            if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
-                                                                rows.append(r)
-                                                    
-                                                    if row_idx <= len(rows):
-                                                        class_row = rows[row_idx - 1]
-                                                        class_row_id = class_row.get_attribute('id') or ''
-                                                        # Re-expand the row after reconnection
-                                                        print_with_timestamp(f"      [RECONNECT] Re-expanding row after browser reconnection...")
-                                                        expand_row(driver, class_row_id, reconnect_func=create_reconnect_func)
-                                                        time.sleep(sleep_medium)
-                                                        print_with_timestamp(f"      Retrying strategies after reconnection...")
-                                                    else:
-                                                        print_with_timestamp(f"      [ERROR] Row {row_idx} no longer available after reconnection")
-                                                        break
-                                                else:
-                                                    print_with_timestamp(f"      [WARNING] Browser reconnection failed, retrying without reconnection...")
-                                                    time.sleep(strategy_retry_delay)
-                                            except Exception as reconnect_error:
-                                                print_with_timestamp(f"      [WARNING] Error during browser reconnection: {reconnect_error}")
-                                                time.sleep(strategy_retry_delay)
-                                        else:
-                                            print_with_timestamp(f"      Browser already reconnected, retrying...")
-                                            time.sleep(strategy_retry_delay)
-                                        
-                                        detail_rows = []  # Reset for retry
-                                        continue  # Continue to next iteration
-                                    else:
-                                        print_with_timestamp(f"      Strategies failed after {max_strategy_retries} attempts: {e}")
-                                        break  # Break out of loop on final attempt
-                            
-                            print_with_timestamp(f"      Total found: {len(detail_rows)} entry detail rows")
-                            
-                            # Log extraction
-                            if detail_rows:
-                                log_import_activity(conn, 'scrape_class_results.py', action='EXTRACT_DATA', 
-                                                  additional_info=f'ShowClassID: {show_class_id}, Entry detail rows found: {len(detail_rows)}')
-                            
-                            if detail_rows:
-                                # Get column mapping for entry details from the grid table
-                                # detail_rows now contains tuples of (row_element, grid_table) from Strategy 1 and 2
-                                # Strategy 3 and 4 might still have plain row elements
-                                grid_table = None
-                                if isinstance(detail_rows[0], tuple):
-                                    grid_table = detail_rows[0][1]
-                                else:
-                                    # Fallback: try to find the grid table from the first row
-                                    try:
-                                        first_row = detail_rows[0] if not isinstance(detail_rows[0], tuple) else detail_rows[0][0]
-                                        grid_table = first_row.find_element(By.XPATH, "./ancestor::table[contains(@id, 'grPlacing')][1]")
-                                    except:
-                                        try:
-                                            first_row = detail_rows[0] if not isinstance(detail_rows[0], tuple) else detail_rows[0][0]
-                                            grid_table = first_row.find_element(By.XPATH, "./ancestor::table[1]")
-                                        except:
-                                            print_with_timestamp(f"      [WARNING] Could not find grid table for column mapping")
-                                
-                                if grid_table:
-                                    entry_column_map = get_column_indices_for_entry_grid(grid_table)
-                                    print_with_timestamp(f"      Entry column mapping: {entry_column_map}")
-                                else:
-                                    print_with_timestamp(f"      [WARNING] Cannot extract entry details without grid table")
-                                    entry_column_map = {}
-                                
-                                # Extract all entry details first (batch extraction for better performance)
-                                all_entry_details = []
-                                for detail_row_item in detail_rows:
-                                    # Extract row element from tuple if it's a tuple
-                                    if isinstance(detail_row_item, tuple):
-                                        detail_row = detail_row_item[0]
-                                    else:
-                                        detail_row = detail_row_item
-                                    
-                                    if entry_column_map:
-                                        # Direct extraction without retry overhead (rows should be fresh)
-                                        try:
-                                            cells = detail_row.find_elements(By.TAG_NAME, "td")
-                                            if len(cells) >= 3:
-                                                entry_data = {}
-                                                for field, idx in entry_column_map.items():
-                                                    if idx is not None and len(cells) > idx:
-                                                        entry_data[field] = cells[idx].text.strip()
-                                                    else:
-                                                        entry_data[field] = ''
-                                                if entry_data:
-                                                    all_entry_details.append(entry_data)
-                                        except StaleElementReferenceException:
-                                            # Fallback to retry function if stale (with reconnection support)
-                                            entry_details = extract_entry_details_from_row(detail_row, entry_column_map, reconnect_func=create_reconnect_func)
-                                            if entry_details:
-                                                all_entry_details.append(entry_details)
-                                        except Exception as e:
-                                            pass  # Skip this row
-                                
-                                # Batch save to database (use single transaction for better performance)
-                                if all_entry_details:
-                                    print_with_timestamp(f"      Extracted {len(all_entry_details)} entry details, saving to database...")
-                                    saved_entries = 0
-                                    cursor = conn.cursor()
-                                    try:
-                                        for entry_details in all_entry_details:
-                                            # Use batch mode (no commit per entry)
-                                            if save_show_result_to_database(conn, show_class_id, entry_details, cursor=cursor, commit=False):
-                                                saved_entries += 1
-                                                results_count += 1
-                                        # Commit all entries at once
-                                        conn.commit()
-                                        print_with_timestamp(f"      Saved {saved_entries}/{len(all_entry_details)} entries")
-                                        # Log batch save
-                                        log_import_activity(conn, 'scrape_class_results.py', target_table='ShowResults', 
-                                                          action='INSERT', row_count=saved_entries,
-                                                          additional_info=f'ShowClassID: {show_class_id}, Batch size: {len(all_entry_details)}')
-                                    except Exception as e:
-                                        conn.rollback()
-                                        print_with_timestamp(f"      [WARNING] Error in batch save, rolling back: {e}")
-                                        log_import_activity(conn, 'scrape_class_results.py', target_table='ShowResults', 
-                                                          action='ERROR', error_detail=str(e),
-                                                          additional_info=f'ShowClassID: {show_class_id}, Batch size: {len(all_entry_details)}')
-                                    finally:
-                                        cursor.close()
-                                elif entry_column_map:
-                                    print_with_timestamp(f"      [WARNING] No entry details extracted from {len(detail_rows)} rows")
-                            else:
-                                print_with_timestamp(f"      [WARNING] No entry detail rows found after expansion")
-                            
-                            # Check if there are non-placing entries to capture (Entries > Placings)
-                            # Note: NonPlacingComplete only applies to non-placing entries (Place = 0)
-                            # Placing entries (Place > 0) are always collected regardless of NonPlacingComplete status
-                            # Skip non-placing entries if already marked as complete
-                            if max_entries and max_placings and max_entries > max_placings and not nonplacing_complete:
-                                nonplacing_count = max_entries - max_placings
-                                print_with_timestamp(f"      Checking for non-placing entries ({nonplacing_count} expected)...")
-                                
-                                # Find non-placing entries grid (tables that are NOT grPlacing)
-                                nonplacing_detail_rows = []
-                                max_nonplacing_retries = 3
-                                nonplacing_success = False
-                                
-                                for nonplacing_attempt in range(max_nonplacing_retries):
-                                    if nonplacing_success:
-                                        break
-                                    
-                                    try:
-                                        # Re-find grid and rows to avoid stale elements
-                                        grid_nonplacing = driver.find_element(By.CSS_SELECTOR,
-                                            "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
-                                        all_trs_nonplacing = grid_nonplacing.find_elements(By.TAG_NAME, "tr")
-                                        
-                                        # Find the class row index again
-                                        class_row_idx_nonplacing = -1
-                                        for i, tr in enumerate(all_trs_nonplacing):
-                                            try:
-                                                tr_id = tr.get_attribute('id') or ''
-                                                if tr_id == class_row_id:
-                                                    class_row_idx_nonplacing = i
-                                                    break
-                                            except StaleElementReferenceException:
-                                                continue
-                                        
-                                        if class_row_idx_nonplacing >= 0:
-                                            # Look for rows following the class row that contain non-placing entry grids (NOT grPlacing)
-                                            for i in range(class_row_idx_nonplacing + 1, len(all_trs_nonplacing)):
-                                                try:
-                                                    next_tr = all_trs_nonplacing[i]
-                                                    next_tr_id = next_tr.get_attribute('id') or ''
-                                                    next_tr_class = next_tr.get_attribute('class') or ''
-                                                    
-                                                    # If this is another class row, stop
-                                                    if 'DataRow' in next_tr_id and 'dxdt' not in next_tr_id and 'dxgvDetailRow' not in next_tr_class:
-                                                        cells = next_tr.find_elements(By.TAG_NAME, "td")
-                                                        if len(cells) >= 2:
-                                                            break
-                                                    
-                                                    # Look for tables that are NOT grPlacing (those are the placing entries)
-                                                    nested_tables = next_tr.find_elements(By.TAG_NAME, "table")
-                                                    for nested_table in nested_tables:
-                                                        table_id = nested_table.get_attribute('id') or ''
-                                                        
-                                                        # Skip placing entry grids (grPlacing)
-                                                        if 'grPlacing' in table_id:
-                                                            continue
-                                                        
-                                                        # Look for non-placing entry grids (12 columns: Entry, Horse, Rider, Country, Owner, Trainer, Prize, Start, Score, Percent, USEF, EC)
-                                                        table_rows = nested_table.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow'], tr.dxgvDataRow")
-                                                        if table_rows:
-                                                            # Check if this looks like a non-placing entry table (has 12 columns)
-                                                            for tr in table_rows[:1]:  # Check first row to see structure
-                                                                cells = tr.find_elements(By.TAG_NAME, "td")
-                                                                if len(cells) >= 12:  # 12 columns for non-placing entries
-                                                                    # This could be a non-placing entry grid
-                                                                    # Store all rows from this table
-                                                                    for nr in table_rows:
-                                                                        nr_id = nr.get_attribute('id') or ''
-                                                                        if 'HeaderRow' not in nr_id and 'FilterRow' not in nr_id:
-                                                                            nonplacing_detail_rows.append((nr, nested_table))
-                                                                    break
-                                                except StaleElementReferenceException:
-                                                    if nonplacing_attempt < max_nonplacing_retries - 1:
-                                                        raise  # Re-raise to trigger retry
-                                                    continue
-                                                except Exception:
-                                                    continue
-                                        
-                                        if nonplacing_detail_rows:
-                                            print_with_timestamp(f"      Found {len(nonplacing_detail_rows)} non-placing entry rows")
-                                            nonplacing_success = True
-                                            break
-                                    except StaleElementReferenceException:
-                                        if nonplacing_attempt < max_nonplacing_retries - 1:
-                                            print_with_timestamp(f"      Non-placing grid search stale element (attempt {nonplacing_attempt + 1}/{max_nonplacing_retries}), retrying...")
-                                            time.sleep(sleep_short / 4)
-                                            continue
-                                        else:
-                                            break
-                                    except Exception as e:
-                                        if nonplacing_attempt < max_nonplacing_retries - 1:
-                                            time.sleep(sleep_short / 4)
-                                            continue
-                                        else:
-                                            print_with_timestamp(f"      [WARNING] Error finding non-placing entries grid: {e}")
-                                            break
-                                
-                                # Extract and save non-placing entries
-                                if nonplacing_detail_rows:
-                                    # Get column mapping for non-placing entries
-                                    nonplacing_grid_table = nonplacing_detail_rows[0][1] if isinstance(nonplacing_detail_rows[0], tuple) else None
-                                    if nonplacing_grid_table:
-                                        nonplacing_column_map = get_column_indices_for_nonplacing_grid(nonplacing_grid_table)
-                                        print_with_timestamp(f"      Non-placing entry column mapping: {nonplacing_column_map}")
-                                    else:
-                                        print_with_timestamp(f"      [WARNING] Could not find grid table for non-placing column mapping")
-                                        nonplacing_column_map = {}
-                                    
-                                    # Extract all non-placing entry details
-                                    all_nonplacing_details = []
-                                    seen_nonplacing_entries = set()
-                                    
-                                    for detail_row_item in nonplacing_detail_rows:
-                                        if isinstance(detail_row_item, tuple):
-                                            detail_row = detail_row_item[0]
-                                        else:
-                                            detail_row = detail_row_item
-                                        
-                                        if nonplacing_column_map:
-                                            try:
-                                                cells = detail_row.find_elements(By.TAG_NAME, "td")
-                                                if len(cells) >= 3:
-                                                    entry_data = {}
-                                                    # Set Place to 0 for non-placing entries
-                                                    entry_data['Place'] = '0'
-                                                    # Set AddBack to '$0.00' for non-placing entries (not in grid)
-                                                    entry_data['AddBack'] = '$0.00'
-                                                    
-                                                    for field, idx in nonplacing_column_map.items():
-                                                        if field in ['Place', 'AddBack']:
-                                                            continue  # Already set to defaults, skip these fields
-                                                        if idx is not None and len(cells) > idx:
-                                                            entry_data[field] = cells[idx].text.strip()
-                                                        else:
-                                                            entry_data[field] = ''
-                                                    
-                                                    # Check for duplicates using Entry number
-                                                    entry_number = entry_data.get('Entry', '').strip()
-                                                    if entry_number:
-                                                        if entry_number in seen_nonplacing_entries:
-                                                            continue  # Skip duplicate
-                                                        seen_nonplacing_entries.add(entry_number)
-                                                    
-                                                    if entry_data and len(all_nonplacing_details) < nonplacing_count:
-                                                        all_nonplacing_details.append(entry_data)
-                                            except StaleElementReferenceException:
-                                                # Use retry function for stale elements
-                                                def extract_nonplacing_entry():
-                                                    cells = detail_row.find_elements(By.TAG_NAME, "td")
-                                                    if len(cells) < 3:
-                                                        return None
-                                                    entry_data = {}
-                                                    # Set Place to 0 for non-placing entries
-                                                    entry_data['Place'] = '0'
-                                                    # Set AddBack to '$0.00' for non-placing entries (not in grid)
-                                                    entry_data['AddBack'] = '$0.00'
-                                                    
-                                                    for field, idx in nonplacing_column_map.items():
-                                                        if field in ['Place', 'AddBack']:
-                                                            continue  # Already set to defaults
-                                                        if idx is not None and len(cells) > idx:
-                                                            entry_data[field] = cells[idx].text.strip()
-                                                        else:
-                                                            entry_data[field] = ''
-                                                    return entry_data
-                                                
-                                                entry_details = retry_on_stale_element(extract_nonplacing_entry, max_retries=3, delay=sleep_short, reconnect_func=create_reconnect_func)
-                                                if entry_details:
-                                                    entry_details['Place'] = '0'  # Ensure Place is set
-                                                    entry_details['AddBack'] = '$0.00'  # Ensure AddBack is set
-                                                    entry_number = entry_details.get('Entry', '').strip()
-                                                    if entry_number and entry_number not in seen_nonplacing_entries:
-                                                        seen_nonplacing_entries.add(entry_number)
-                                                        if len(all_nonplacing_details) < nonplacing_count:
-                                                            all_nonplacing_details.append(entry_details)
-                                            except Exception:
-                                                pass
-                                    
-                                    # Save non-placing entries to database
-                                    if all_nonplacing_details:
-                                        print_with_timestamp(f"      Extracted {len(all_nonplacing_details)} non-placing entry details, saving to database...")
-                                        saved_nonplacing = 0
-                                        cursor_nonplacing = conn.cursor()
-                                        try:
-                                            for entry_details in all_nonplacing_details:
-                                                if save_show_result_to_database(conn, show_class_id, entry_details, cursor=cursor_nonplacing, commit=False):
-                                                    saved_nonplacing += 1
-                                                    results_count += 1
-                                            conn.commit()
-                                            print_with_timestamp(f"      Saved {saved_nonplacing}/{len(all_nonplacing_details)} non-placing entries")
-                                            
-                                            # Check if we've reached the expected count and mark as complete
-                                            cursor_check_complete = conn.cursor()
-                                            cursor_check_complete.execute("""
-                                                SELECT COUNT(*) 
-                                                FROM sResults.ShowResults 
-                                                WHERE ShowClassID = ? AND Place = 0
-                                            """, show_class_id)
-                                            final_nonplacing_count = cursor_check_complete.fetchone()[0]
-                                            cursor_check_complete.close()
-                                            
-                                            if final_nonplacing_count >= nonplacing_count:
-                                                cursor_mark = conn.cursor()
-                                                cursor_mark.execute("""
-                                                    UPDATE sResults.ShowClass 
-                                                    SET NonPlacingComplete = 1, UpdatedDate = GETDATE()
-                                                    WHERE ID = ?
-                                                """, show_class_id)
-                                                conn.commit()
-                                                cursor_mark.close()
-                                                print_with_timestamp(f"      [OK] Marked class as complete ({final_nonplacing_count}/{nonplacing_count} non-placing entries)")
-                                            
-                                            # Log batch save
-                                            log_import_activity(conn, 'scrape_class_results.py', target_table='ShowResults', 
-                                                              action='INSERT', row_count=saved_nonplacing,
-                                                              additional_info=f'ShowClassID: {show_class_id}, Non-placing entries, Batch size: {len(all_nonplacing_details)}')
-                                        except Exception as e:
-                                            conn.rollback()
-                                            print_with_timestamp(f"      [WARNING] Error in batch save of non-placing entries, rolling back: {e}")
-                                            log_import_activity(conn, 'scrape_class_results.py', target_table='ShowResults', 
-                                                              action='ERROR', error_detail=str(e),
-                                                              additional_info=f'ShowClassID: {show_class_id}, Non-placing entries, Batch size: {len(all_nonplacing_details)}')
-                                        finally:
-                                            cursor_nonplacing.close()
-                                    elif nonplacing_column_map:
-                                        print_with_timestamp(f"      [WARNING] No non-placing entry details extracted from {len(nonplacing_detail_rows)} rows")
-                                else:
-                                    print_with_timestamp(f"      [WARNING] No non-placing entry rows found (expected {nonplacing_count})")
-                            elif nonplacing_complete:
-                                print_with_timestamp(f"      Skipping non-placing entries (already marked as complete)")
-                        else:
-                            # Expansion failed - report error and potentially retry
-                            print_with_timestamp(f"      [ERROR] Failed to expand row {row_idx} (row_expanded=False)")
-                            print_with_timestamp(f"      [ERROR] Row ID: {class_row_id}")
-                            # Don't skip the row - try to continue or log the failure
-                            # We could retry here or mark it for later processing
-                            
-                            # Collapse row after capturing data (even if expansion failed, ensure row state is correct)
-                            try:
-                                # Re-find the row to avoid stale element
-                                def refresh_for_collapse():
-                                    grid_collapse = driver.find_element(By.CSS_SELECTOR, 
-                                        "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
-                                    rows_collapse = grid_collapse.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
-                                    if not rows_collapse:
-                                        all_rows_collapse = grid_collapse.find_elements(By.TAG_NAME, "tr")
-                                        rows_collapse = []
-                                        for r in all_rows_collapse:
-                                            row_id_c = r.get_attribute('id') or ''
-                                            row_class_c = r.get_attribute('class') or ''
-                                            if ('DataRow' in row_id_c or 'dxgvDataRow' in row_class_c) and 'HeaderRow' not in row_id_c and 'FilterRow' not in row_id_c:
-                                                rows_collapse.append(r)
-                                    
-                                    if row_idx <= len(rows_collapse):
-                                        row_to_collapse = rows_collapse[row_idx - 1]
-                                        collapse_row_id_c = row_to_collapse.get_attribute('id') or ''
-                                        if collapse_row_id_c:
-                                            collapse_row(driver, collapse_row_id_c, reconnect_func=create_reconnect_func)
-                                            return True
-                                    return False
-                                
-                                # Try with retry and reconnection support
-                                try:
-                                    refresh_for_collapse()
-                                except StaleElementReferenceException:
-                                    # Try reconnecting and retrying
-                                    new_driver_collapse = reconnect_browser_and_navigate(driver, show_guid, year, show_name)
-                                    if new_driver_collapse:
-                                        driver = new_driver_collapse
-                                        # Re-expand first to get back to the same state
-                                        grid = driver.find_element(By.CSS_SELECTOR,
-                                            "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
-                                        rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
-                                        if not rows:
-                                            all_rows = grid.find_elements(By.TAG_NAME, "tr")
-                                            rows = []
-                                            for r in all_rows:
-                                                row_id = r.get_attribute('id') or ''
-                                                row_class = r.get_attribute('class') or ''
-                                                if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
-                                                    rows.append(r)
-                                        if row_idx <= len(rows):
-                                            row_to_collapse = rows[row_idx - 1]
-                                            collapse_row_id = row_to_collapse.get_attribute('id') or ''
-                                            if collapse_row_id:
-                                                collapse_row(driver, collapse_row_id, reconnect_func=create_reconnect_func)
-                            except Exception as e:
-                                print_with_timestamp(f"      [WARNING] Could not collapse row: {e}")
-                    except Exception as e:
-                        print_with_timestamp(f"    [WARNING] Error expanding/extracting entry details: {e}")
-                        import traceback
-                        traceback.print_exc()
-                        continue
-
-            except Exception as e:
-                print_with_timestamp(f"  [WARNING] Error processing entry details for row {row_idx}: {e}")
-                continue
+                    continue
+            
+            print_with_timestamp(f"  [OK] Processed {processed_count}/{len(class_data_list)} rows")
+            
+        except Exception as e:
+            print_with_timestamp(f"  [ERROR] Error during row processing: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        # All rows have been processed (expand -> extract -> collapse)
+        # No further processing needed
+        
+        # STEP 3: Optional cleanup - collapse any remaining expanded rows
+        # (Most rows should already be collapsed, but this is a safety measure)
+        # STEP 3: Collapse all rows at once (optional cleanup)
+        print_with_timestamp(f"  Step 3: Collapsing all expanded rows...")
+        collapsed_count = 0
+        try:
+            # Check if driver session is still valid before collapsing
+            try:
+                _ = driver.current_url  # Test if session is valid
+            except Exception:
+                print_with_timestamp(f"  [WARNING] Driver session invalid before collapse, reconnecting...")
+                new_driver = create_reconnect_func()
+                if new_driver:
+                    driver = new_driver
+                else:
+                    print_with_timestamp(f"  [WARNING] Failed to reconnect, skipping collapse")
+                    return results_count, driver
+            
+            grid = driver.find_element(By.CSS_SELECTOR, 
+                "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+            rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
+            if not rows:
+                all_rows = grid.find_elements(By.TAG_NAME, "tr")
+                rows = []
+                for r in all_rows:
+                    row_id = r.get_attribute('id') or ''
+                    row_class = r.get_attribute('class') or ''
+                    # Exclude detail rows (containing grPlacing, grNonPlacing, dxdt), header rows, and filter rows
+                    detail_row_indicators = ['grPlacing', 'grNonPlacing', 'dxdt']
+                    is_detail_row = any(indicator in row_id for indicator in detail_row_indicators)
+                    
+                    if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and \
+                       'HeaderRow' not in row_id and 'FilterRow' not in row_id and \
+                       not is_detail_row:
+                        rows.append(r)
+            
+            for row_idx, class_row_id in row_id_map.items():
+                try:
+                    if collapse_row(driver, class_row_id, reconnect_func=create_reconnect_func):
+                        collapsed_count += 1
+                except Exception as e:
+                    print_with_timestamp(f"    [WARNING] Could not collapse row {row_idx}: {e}")
+                    continue
+            
+            print_with_timestamp(f"  [OK] Collapsed {collapsed_count}/{len(row_id_map)} rows")
+        except Exception as e:
+            print_with_timestamp(f"  [WARNING] Error during bulk collapse: {e}")
         
         print_with_timestamp(f"  [OK] Completed scraping for ShowGUID {show_guid}: {results_count} results saved")
         

@@ -1,0 +1,193 @@
+// DAX Measures for HorseShows Power BI Report
+// Create a Measures table and add these measures
+
+// ============================================
+// CORE COUNTS
+// ============================================
+
+Total Entries = 
+COUNTROWS(factResults)
+
+Total Shows = 
+DISTINCTCOUNT(factResults[ShowID])
+
+Total Classes = 
+DISTINCTCOUNT(factResults[ClassID])
+
+Unique Riders = 
+DISTINCTCOUNT(factResults[RiderID])
+
+Unique Horses = 
+DISTINCTCOUNT(factResults[HorseID])
+
+Unique Trainers = 
+DISTINCTCOUNT(factResults[TrainerID])
+
+
+// ============================================
+// PLACEMENT METRICS
+// ============================================
+
+First Places = 
+SUM(factResults[IsFirstPlace])
+
+Top 3 Places = 
+SUM(factResults[IsTopThree])
+
+Top 6 Places = 
+SUM(factResults[IsTopSix])
+
+Total Placements = 
+SUM(factResults[IsPlacing])
+
+Non-Placements = 
+CALCULATE(COUNTROWS(factResults), factResults[Place] = 0)
+
+Placement Rate % = 
+DIVIDE([Total Placements], [Total Entries], 0) * 100
+
+First Place Rate % = 
+DIVIDE([First Places], [Total Entries], 0) * 100
+
+Top 3 Rate % = 
+DIVIDE([Top 3 Places], [Total Entries], 0) * 100
+
+Average Placement = 
+AVERAGEX(
+    FILTER(factResults, factResults[Place] > 0),
+    factResults[Place]
+)
+
+
+// ============================================
+// PRIZE MONEY
+// ============================================
+
+Total Prize Money = 
+SUM(factResults[PrizeMoney])
+
+Average Prize Money = 
+AVERAGE(factResults[PrizeMoney])
+
+Prize Money (Formatted) = 
+FORMAT([Total Prize Money], "$#,##0.00")
+
+
+// ============================================
+// TIME INTELLIGENCE
+// ============================================
+
+Entries YTD = 
+TOTALYTD([Total Entries], dimDate[Date])
+
+Entries Prior Year = 
+CALCULATE(
+    [Total Entries],
+    SAMEPERIODLASTYEAR(dimDate[Date])
+)
+
+Entries YoY Growth % = 
+VAR CurrentYear = [Total Entries]
+VAR PriorYear = [Entries Prior Year]
+RETURN
+DIVIDE(CurrentYear - PriorYear, PriorYear, 0) * 100
+
+Placements This Month = 
+CALCULATE(
+    [Total Placements],
+    DATESMTD(dimDate[Date])
+)
+
+
+// ============================================
+// RANKINGS (for use in visuals)
+// ============================================
+
+Rider Rank by Wins = 
+IF(
+    HASONEVALUE(dimRiders[RiderName]),
+    RANKX(
+        ALL(dimRiders[RiderName]),
+        [First Places],
+        ,
+        DESC,
+        DENSE
+    )
+)
+
+Horse Rank by Wins = 
+IF(
+    HASONEVALUE(dimHorses[HorseName]),
+    RANKX(
+        ALL(dimHorses[HorseName]),
+        [First Places],
+        ,
+        DESC,
+        DENSE
+    )
+)
+
+Trainer Rank by Wins = 
+IF(
+    HASONEVALUE(dimTrainers[TrainerName]),
+    RANKX(
+        ALL(dimTrainers[TrainerName]),
+        [First Places],
+        ,
+        DESC,
+        DENSE
+    )
+)
+
+
+// ============================================
+// COMPARATIVE METRICS
+// ============================================
+
+Entries vs Average = 
+VAR CurrentEntries = [Total Entries]
+VAR AvgEntries = AVERAGEX(ALL(dimShows), [Total Entries])
+RETURN
+CurrentEntries - AvgEntries
+
+Placement Rate vs Average = 
+VAR CurrentRate = [Placement Rate %]
+VAR AvgRate = CALCULATE([Placement Rate %], ALL(dimRiders), ALL(dimHorses), ALL(dimTrainers))
+RETURN
+CurrentRate - AvgRate
+
+
+// ============================================
+// CONDITIONAL FORMATTING HELPERS
+// ============================================
+
+Placement Color = 
+SWITCH(
+    TRUE(),
+    [Placement Rate %] >= 70, "#2E7D32",  // Green - Excellent
+    [Placement Rate %] >= 50, "#1976D2",  // Blue - Good
+    [Placement Rate %] >= 30, "#F57C00",  // Orange - Average
+    "#D32F2F"  // Red - Below Average
+)
+
+Trend Indicator = 
+VAR Growth = [Entries YoY Growth %]
+RETURN
+SWITCH(
+    TRUE(),
+    Growth > 10, "⬆️",
+    Growth > 0, "↗️",
+    Growth = 0, "➡️",
+    Growth > -10, "↘️",
+    "⬇️"
+)
+
+
+// ============================================
+// KPI TARGETS (customize as needed)
+// ============================================
+
+Placement Target = 50  // 50% placement rate target
+
+Is Above Target = 
+IF([Placement Rate %] >= [Placement Target], 1, 0)

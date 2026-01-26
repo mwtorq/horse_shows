@@ -1,0 +1,239 @@
+{
+  "name": "HorseShows",
+  "compatibilityLevel": 1567,
+  "model": {
+    "culture": "en-US",
+    "dataAccessOptions": {
+      "legacyRedirects": true,
+      "returnErrorValuesAsNull": true
+    },
+    "defaultPowerBIDataSourceVersion": "powerBI_V3",
+    "tables": [
+      {
+        "name": "dimShows",
+        "columns": [
+          {"name": "ShowID", "dataType": "int64", "isKey": true, "sourceColumn": "ShowID"},
+          {"name": "Year", "dataType": "int64", "sourceColumn": "Year"},
+          {"name": "ShowName", "dataType": "string", "sourceColumn": "ShowName"},
+          {"name": "StartDate", "dataType": "dateTime", "sourceColumn": "StartDate"},
+          {"name": "EndDate", "dataType": "dateTime", "sourceColumn": "EndDate"},
+          {"name": "ShowLocation", "dataType": "string", "sourceColumn": "ShowLocation"},
+          {"name": "StateProv", "dataType": "string", "sourceColumn": "StateProv"},
+          {"name": "GoverningBody", "dataType": "string", "sourceColumn": "GoverningBody"}
+        ],
+        "partitions": [
+          {
+            "name": "dimShows",
+            "mode": "import",
+            "source": {
+              "type": "m",
+              "expression": "let\n    Source = Sql.Database(#\"ServerName\", #\"DatabaseName\"),\n    dimShows = Source{[Schema=\"sResults\",Item=\"dimShows\"]}[Data]\nin\n    dimShows"
+            }
+          }
+        ]
+      },
+      {
+        "name": "dimClasses",
+        "columns": [
+          {"name": "ClassID", "dataType": "int64", "isKey": true, "sourceColumn": "ClassID"},
+          {"name": "ShowID", "dataType": "int64", "sourceColumn": "ShowID"},
+          {"name": "ClassNumber", "dataType": "string", "sourceColumn": "ClassNumber"},
+          {"name": "ClassName", "dataType": "string", "sourceColumn": "ClassName"},
+          {"name": "ClassType", "dataType": "string", "sourceColumn": "ClassType"},
+          {"name": "DivisionName", "dataType": "string", "sourceColumn": "DivisionName"},
+          {"name": "TotalEntries", "dataType": "int64", "sourceColumn": "TotalEntries"},
+          {"name": "TotalPlacings", "dataType": "int64", "sourceColumn": "TotalPlacings"},
+          {"name": "DataStatus", "dataType": "string", "sourceColumn": "DataStatus"}
+        ],
+        "partitions": [
+          {
+            "name": "dimClasses",
+            "mode": "import",
+            "source": {
+              "type": "m",
+              "expression": "let\n    Source = Sql.Database(#\"ServerName\", #\"DatabaseName\"),\n    dimClasses = Source{[Schema=\"sResults\",Item=\"dimClasses\"]}[Data]\nin\n    dimClasses"
+            }
+          }
+        ]
+      },
+      {
+        "name": "dimRiders",
+        "columns": [
+          {"name": "RiderID", "dataType": "int64", "isKey": true, "sourceColumn": "RiderID"},
+          {"name": "RiderName", "dataType": "string", "sourceColumn": "RiderName"},
+          {"name": "USEFID", "dataType": "string", "sourceColumn": "USEFID"}
+        ],
+        "partitions": [
+          {
+            "name": "dimRiders",
+            "mode": "import",
+            "source": {
+              "type": "m",
+              "expression": "let\n    Source = Sql.Database(#\"ServerName\", #\"DatabaseName\"),\n    dimRiders = Source{[Schema=\"sResults\",Item=\"dimRiders\"]}[Data]\nin\n    dimRiders"
+            }
+          }
+        ]
+      },
+      {
+        "name": "dimHorses",
+        "columns": [
+          {"name": "HorseID", "dataType": "int64", "isKey": true, "sourceColumn": "HorseID"},
+          {"name": "HorseName", "dataType": "string", "sourceColumn": "HorseName"},
+          {"name": "OwnerName", "dataType": "string", "sourceColumn": "OwnerName"}
+        ],
+        "partitions": [
+          {
+            "name": "dimHorses",
+            "mode": "import",
+            "source": {
+              "type": "m",
+              "expression": "let\n    Source = Sql.Database(#\"ServerName\", #\"DatabaseName\"),\n    dimHorses = Source{[Schema=\"sResults\",Item=\"dimHorses\"]}[Data]\nin\n    dimHorses"
+            }
+          }
+        ]
+      },
+      {
+        "name": "dimTrainers",
+        "columns": [
+          {"name": "TrainerID", "dataType": "int64", "isKey": true, "sourceColumn": "TrainerID"},
+          {"name": "TrainerName", "dataType": "string", "sourceColumn": "TrainerName"}
+        ],
+        "partitions": [
+          {
+            "name": "dimTrainers",
+            "mode": "import",
+            "source": {
+              "type": "m",
+              "expression": "let\n    Source = Sql.Database(#\"ServerName\", #\"DatabaseName\"),\n    dimTrainers = Source{[Schema=\"sResults\",Item=\"dimTrainers\"]}[Data]\nin\n    dimTrainers"
+            }
+          }
+        ]
+      },
+      {
+        "name": "factResults",
+        "columns": [
+          {"name": "ResultID", "dataType": "int64", "isKey": true, "sourceColumn": "ResultID"},
+          {"name": "ClassID", "dataType": "int64", "sourceColumn": "ClassID"},
+          {"name": "ShowID", "dataType": "int64", "sourceColumn": "ShowID"},
+          {"name": "RiderID", "dataType": "int64", "sourceColumn": "RiderID"},
+          {"name": "HorseID", "dataType": "int64", "sourceColumn": "HorseID"},
+          {"name": "TrainerID", "dataType": "int64", "sourceColumn": "TrainerID"},
+          {"name": "ShowDate", "dataType": "dateTime", "sourceColumn": "ShowDate"},
+          {"name": "Entry", "dataType": "string", "sourceColumn": "Entry"},
+          {"name": "Start", "dataType": "string", "sourceColumn": "Start"},
+          {"name": "Place", "dataType": "int64", "sourceColumn": "Place"},
+          {"name": "IsPlacing", "dataType": "int64", "sourceColumn": "IsPlacing"},
+          {"name": "IsFirstPlace", "dataType": "int64", "sourceColumn": "IsFirstPlace"},
+          {"name": "IsTopThree", "dataType": "int64", "sourceColumn": "IsTopThree"},
+          {"name": "IsTopSix", "dataType": "int64", "sourceColumn": "IsTopSix"},
+          {"name": "ClassTotalEntries", "dataType": "int64", "sourceColumn": "ClassTotalEntries"},
+          {"name": "PrizeMoney", "dataType": "decimal", "sourceColumn": "PrizeMoney"},
+          {"name": "USEF", "dataType": "string", "sourceColumn": "USEF"},
+          {"name": "EC", "dataType": "string", "sourceColumn": "EC"},
+          {"name": "Score", "dataType": "string", "sourceColumn": "Score"},
+          {"name": "Percent", "dataType": "string", "sourceColumn": "Percent"}
+        ],
+        "partitions": [
+          {
+            "name": "factResults",
+            "mode": "import",
+            "source": {
+              "type": "m",
+              "expression": "let\n    Source = Sql.Database(#\"ServerName\", #\"DatabaseName\"),\n    factResults = Source{[Schema=\"sResults\",Item=\"factResults\"]}[Data]\nin\n    factResults"
+            }
+          }
+        ]
+      },
+      {
+        "name": "_Measures",
+        "columns": [
+          {"name": "MeasureGroup", "dataType": "string", "isHidden": true, "sourceColumn": "MeasureGroup"}
+        ],
+        "measures": [
+          {"name": "Total Entries", "expression": "COUNTROWS(factResults)"},
+          {"name": "Total Shows", "expression": "DISTINCTCOUNT(factResults[ShowID])"},
+          {"name": "Total Classes", "expression": "DISTINCTCOUNT(factResults[ClassID])"},
+          {"name": "Unique Riders", "expression": "DISTINCTCOUNT(factResults[RiderID])"},
+          {"name": "Unique Horses", "expression": "DISTINCTCOUNT(factResults[HorseID])"},
+          {"name": "Unique Trainers", "expression": "DISTINCTCOUNT(factResults[TrainerID])"},
+          {"name": "First Places", "expression": "SUM(factResults[IsFirstPlace])"},
+          {"name": "Top 3 Places", "expression": "SUM(factResults[IsTopThree])"},
+          {"name": "Top 6 Places", "expression": "SUM(factResults[IsTopSix])"},
+          {"name": "Total Placements", "expression": "SUM(factResults[IsPlacing])"},
+          {"name": "Non-Placements", "expression": "CALCULATE(COUNTROWS(factResults), factResults[Place] = 0)"},
+          {"name": "Placement Rate %", "expression": "DIVIDE([Total Placements], [Total Entries], 0) * 100"},
+          {"name": "First Place Rate %", "expression": "DIVIDE([First Places], [Total Entries], 0) * 100"},
+          {"name": "Top 3 Rate %", "expression": "DIVIDE([Top 3 Places], [Total Entries], 0) * 100"},
+          {"name": "Total Prize Money", "expression": "SUM(factResults[PrizeMoney])"},
+          {"name": "Average Prize Money", "expression": "AVERAGE(factResults[PrizeMoney])"},
+          {"name": "Average Placement", "expression": "AVERAGEX(FILTER(factResults, factResults[Place] > 0), factResults[Place])"}
+        ],
+        "partitions": [
+          {
+            "name": "_Measures",
+            "mode": "import",
+            "source": {
+              "type": "calculated",
+              "expression": "ROW(\"MeasureGroup\", \"_Measures\")"
+            }
+          }
+        ]
+      }
+    ],
+    "relationships": [
+      {
+        "name": "factResults_dimClasses",
+        "fromTable": "factResults",
+        "fromColumn": "ClassID",
+        "toTable": "dimClasses",
+        "toColumn": "ClassID"
+      },
+      {
+        "name": "factResults_dimRiders",
+        "fromTable": "factResults",
+        "fromColumn": "RiderID",
+        "toTable": "dimRiders",
+        "toColumn": "RiderID"
+      },
+      {
+        "name": "factResults_dimHorses",
+        "fromTable": "factResults",
+        "fromColumn": "HorseID",
+        "toTable": "dimHorses",
+        "toColumn": "HorseID"
+      },
+      {
+        "name": "factResults_dimTrainers",
+        "fromTable": "factResults",
+        "fromColumn": "TrainerID",
+        "toTable": "dimTrainers",
+        "toColumn": "TrainerID"
+      },
+      {
+        "name": "dimClasses_dimShows",
+        "fromTable": "dimClasses",
+        "fromColumn": "ShowID",
+        "toTable": "dimShows",
+        "toColumn": "ShowID"
+      }
+    ],
+    "expressions": [
+      {
+        "name": "ServerName",
+        "kind": "m",
+        "expression": "\"localhost\" meta [IsParameterQuery=true, Type=\"Text\", IsParameterQueryRequired=true]"
+      },
+      {
+        "name": "DatabaseName", 
+        "kind": "m",
+        "expression": "\"HorseShows\" meta [IsParameterQuery=true, Type=\"Text\", IsParameterQueryRequired=true]"
+      }
+    ],
+    "annotations": [
+      {
+        "name": "PBI_QueryOrder",
+        "value": "[\"dimShows\",\"dimClasses\",\"dimRiders\",\"dimHorses\",\"dimTrainers\",\"factResults\",\"Measures\"]"
+      }
+    ]
+  }
+}

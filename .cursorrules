@@ -1,0 +1,44 @@
+# Horse Shows Project - Cursor Rules
+
+## Project Overview
+This is a Python web scraping project that extracts horse show results from competition websites and stores them in a SQL Server database.
+
+## Key Technologies
+- Python 3.x
+- Selenium WebDriver (Chrome) for browser automation
+- pyodbc for SQL Server database connections
+- JavaScript execution for extracting data from dynamic DOM
+
+## Code Style Guidelines
+- Use `print_with_timestamp()` for all console output (provides consistent timestamped logging)
+- Prefer explicit WebDriverWait over time.sleep when waiting for elements
+- Always check for duplicates before inserting into database
+- Use try-except blocks with specific exception handling for Selenium operations
+- Handle StaleElementReferenceException with retry logic
+
+## Database Patterns
+- Schema: sResults (tables: ShowList, ShowClass, ShowResults, Competitors, Horses)
+- Always use parameterized queries (?) to prevent SQL injection
+- Use transactions with commit/rollback for batch operations
+- Check for existing records before INSERT to avoid duplicates
+
+## Selenium Best Practices
+- Find elements by ID when possible (more stable than index-based lookup)
+- Use CSS selectors like `table[id*='grPlacing']` for DevExpress grids
+- Execute JavaScript for bulk data extraction to avoid stale element issues
+- Always collapse expanded rows before moving to the next one
+- Implement reconnection logic for long-running scraping sessions
+
+## Common Patterns
+- Column mapping: Extract column indices from header rows, then use to parse data rows
+- Entry deduplication: Use (Horse, Rider) tuple as unique key
+- Non-placing entries: Set Place=0 and AddBack='$0.00'
+
+## Debugging
+- Add [DEBUG] prefix to diagnostic log messages
+- Include row IDs and indices in error messages for tracing
+- Log extracted data structure before processing
+
+## File Structure
+- scrape_class_results.py - Main scraping script
+- kill_chrome_processes.ps1 - PowerShell script for cleaning up Chrome processes (run with PowerShell, not Python)

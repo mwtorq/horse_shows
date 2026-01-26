@@ -1,11 +1,18 @@
 # Kill Chrome processes that have been inactive for more than 30 minutes
+# Use -KillAll to kill all Chrome processes regardless of activity
 param(
     [int]$InactiveMinutes = 30,
-    [switch]$WhatIf
+    [switch]$WhatIf,
+    [switch]$KillAll
 )
 
-Write-Host "=== Killing Inactive Chrome Processes ===" -ForegroundColor Cyan
-Write-Host "Inactive threshold: $InactiveMinutes minutes`n" -ForegroundColor Gray
+if ($KillAll) {
+    Write-Host "=== Killing ALL Chrome Processes ===" -ForegroundColor Cyan
+    Write-Host "Mode: Kill all processes (regardless of activity)`n" -ForegroundColor Yellow
+} else {
+    Write-Host "=== Killing Inactive Chrome Processes ===" -ForegroundColor Cyan
+    Write-Host "Inactive threshold: $InactiveMinutes minutes`n" -ForegroundColor Gray
+}
 
 # Get all Chrome processes
 $chromeProcs = Get-Process chrome -ErrorAction SilentlyContinue
@@ -126,7 +133,13 @@ foreach ($proc in $chromeProcs) {
         # Calculate inactive duration
         $inactiveDuration = $null
         $isInactive = $false
-        if ($lastActive) {
+        if ($KillAll) {
+            # If KillAll is specified, mark all processes as inactive
+            if ($lastActive) {
+                $inactiveDuration = $currentTime - $lastActive
+            }
+            $isInactive = $true
+        } elseif ($lastActive) {
             $inactiveDuration = $currentTime - $lastActive
             $isInactive = $inactiveDuration.TotalMinutes -gt $InactiveMinutes
         }
@@ -150,7 +163,7 @@ foreach ($proc in $chromeProcs) {
         }
         
         # Get memory usage
-        $memoryMB = [math]::Round($proc.WorkingSet64 / 1MB, 2)
+        $memoryMB = [math]::Round($proc.WorkingSet64 / (1 * 1024 * 1024), 2)
         
         $results += [PSCustomObject]@{
             PID = $proc.Id
@@ -175,16 +188,28 @@ $inactiveProcesses = $results | Where-Object { $_.IsInactive }
 
 Write-Host "=== Summary ===" -ForegroundColor Cyan
 Write-Host "Total Chrome processes: $($results.Count)"
-Write-Host "Active processes (inactive < $InactiveMinutes minutes): $($activeProcesses.Count)" -ForegroundColor Green
-Write-Host "Inactive processes (inactive >= $InactiveMinutes minutes): $($inactiveProcesses.Count)" -ForegroundColor Red
+if ($KillAll) {
+    Write-Host "Processes to kill (all): $($inactiveProcesses.Count)" -ForegroundColor Red
+} else {
+    Write-Host "Active processes (inactive < $InactiveMinutes minutes): $($activeProcesses.Count)" -ForegroundColor Green
+    Write-Host "Inactive processes (inactive >= $InactiveMinutes minutes): $($inactiveProcesses.Count)" -ForegroundColor Red
+}
 
 if ($inactiveProcesses.Count -eq 0) {
-    Write-Host "`nNo inactive Chrome processes to kill." -ForegroundColor Yellow
+    if ($KillAll) {
+        Write-Host "`nNo Chrome processes found to kill." -ForegroundColor Yellow
+    } else {
+        Write-Host "`nNo inactive Chrome processes to kill." -ForegroundColor Yellow
+    }
     exit
 }
 
-# Show inactive processes
-Write-Host "`n=== Inactive Chrome Processes ===" -ForegroundColor Red
+# Show processes to be killed
+if ($KillAll) {
+    Write-Host "`n=== All Chrome Processes (to be killed) ===" -ForegroundColor Red
+} else {
+    Write-Host "`n=== Inactive Chrome Processes ===" -ForegroundColor Red
+}
 $inactiveProcesses | Format-Table -Property @(
     @{Label="PID"; Expression={$_.PID}; Width=8},
     @{Label="Last Active"; Expression={if ($_.LastActive) { $_.LastActive.ToString("yyyy-MM-dd HH:mm:ss") } else { "N/A" }}; Width=20},
@@ -193,14 +218,22 @@ $inactiveProcesses | Format-Table -Property @(
     @{Label="Memory (MB)"; Expression={$_.MemoryMB}; Width=12}
 ) -AutoSize
 
-# Kill inactive processes
+# Kill processes
 if ($WhatIf) {
     Write-Host "`n=== What-If Mode: Would Kill ===" -ForegroundColor Yellow
     foreach ($proc in $inactiveProcesses) {
-        Write-Host "  Would kill PID $($proc.PID) - Inactive for $($proc.InactiveMinutes) minutes" -ForegroundColor Gray
+        if ($KillAll) {
+            Write-Host "  Would kill PID $($proc.PID)" -ForegroundColor Gray
+        } else {
+            Write-Host "  Would kill PID $($proc.PID) - Inactive for $($proc.InactiveMinutes) minutes" -ForegroundColor Gray
+        }
     }
 } else {
-    Write-Host "`n=== Killing Inactive Processes ===" -ForegroundColor Magenta
+    if ($KillAll) {
+        Write-Host "`n=== Killing ALL Chrome Processes ===" -ForegroundColor Magenta
+    } else {
+        Write-Host "`n=== Killing Inactive Processes ===" -ForegroundColor Magenta
+    }
     $killed = @()
     $failed = @()
     
@@ -209,7 +242,11 @@ if ($WhatIf) {
             $process = Get-Process -Id $proc.PID -ErrorAction Stop
             Stop-Process -Id $proc.PID -Force -ErrorAction Stop
             $killed += $proc
-            Write-Host "  Killed PID $($proc.PID) - Inactive for $($proc.InactiveMinutes) minutes" -ForegroundColor Green
+            if ($KillAll) {
+                Write-Host "  Killed PID $($proc.PID)" -ForegroundColor Green
+            } else {
+                Write-Host "  Killed PID $($proc.PID) - Inactive for $($proc.InactiveMinutes) minutes" -ForegroundColor Green
+            }
         } catch {
             $failed += $proc
             Write-Warning "  Failed to kill PID $($proc.PID): $_"
@@ -229,8 +266,8 @@ if ($WhatIf) {
     }
 }
 
-# Show remaining active processes
-if ($activeProcesses.Count -gt 0) {
+# Show remaining active processes (only if not in KillAll mode)
+if (-not $KillAll -and $activeProcesses.Count -gt 0) {
     Write-Host "`n=== Remaining Active Processes ===" -ForegroundColor Green
     $activeProcesses | Format-Table -Property @(
         @{Label="PID"; Expression={$_.PID}; Width=8},

@@ -12,7 +12,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.action_chains import ActionChains
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
+from urllib3.exceptions import ReadTimeoutError, MaxRetryError
 import time
 import getpass
 import re
@@ -62,7 +63,7 @@ def setup_driver(headless=True):
             return setup_driver(headless=False)
         raise
 
-def check_and_authenticate(driver, url, sleep_short=2, sleep_medium=3):
+def check_and_authenticate(driver, url, sleep_short=2, sleep_medium=3, username=None, password=None):
     """Check if authentication is required and handle login if needed
     
     Args:
@@ -70,9 +71,11 @@ def check_and_authenticate(driver, url, sleep_short=2, sleep_medium=3):
         url: URL to navigate to
         sleep_short: Short sleep duration in seconds (default: 2)
         sleep_medium: Medium sleep duration in seconds (default: 3)
+        username: Optional username to use (if None, will prompt)
+        password: Optional password to use (if None, will prompt)
     
     Returns:
-        True if authenticated or not required, False if authentication failed
+        Tuple of (True/False, username, password) - True if authenticated or not required, False if authentication failed
     """
     print_with_timestamp(f"Navigating to {url}...")
     driver.get(url)
@@ -215,7 +218,8 @@ def check_and_authenticate(driver, url, sleep_short=2, sleep_medium=3):
     if not needs_login and not login_link_found:
         print_with_timestamp("  No authentication required")
         # Still navigate to People search page in case we're not there yet
-        return navigate_to_people_search(driver, url, sleep_short, sleep_medium)
+        success = navigate_to_people_search(driver, url, sleep_short, sleep_medium)
+        return success, username, password
     
     # If we found a login link, click it first to reveal the login form
     if login_link_found:
@@ -239,14 +243,17 @@ def check_and_authenticate(driver, url, sleep_short=2, sleep_medium=3):
                 print_with_timestamp(f"  [ERROR] Error clicking login link: {e2}")
                 return False
     
-    # Prompt for credentials
-    print_with_timestamp("\n  Authentication required. Please enter credentials:")
-    username = input("  Username/Email: ").strip()
-    password = getpass.getpass("  Password: ").strip()
-    
+    # Prompt for credentials if not provided
     if not username or not password:
-        print_with_timestamp("  [ERROR] Username and password are required")
-        return False
+        print_with_timestamp("\n  Authentication required. Please enter credentials:")
+        username = input("  Username/Email: ").strip()
+        password = getpass.getpass("  Password: ").strip()
+        
+        if not username or not password:
+            print_with_timestamp("  [ERROR] Username and password are required")
+            return False, None, None
+    else:
+        print_with_timestamp("\n  Re-authenticating with stored credentials...")
     
     # Wait a moment for login form to appear (if we clicked a link)
     if login_link_found:
@@ -324,18 +331,19 @@ def check_and_authenticate(driver, url, sleep_short=2, sleep_medium=3):
                 # Check if password field is still visible (login failed)
                 driver.find_element(By.XPATH, "//input[@type='password']")
                 print_with_timestamp("  [WARNING] Login may have failed - password field still visible")
-                return False
+                return False, username, password
             except NoSuchElementException:
                 print_with_timestamp("  [OK] Login appears successful")
                 # Navigate to People search page after login
-                return navigate_to_people_search(driver, url, sleep_short, sleep_medium)
+                success = navigate_to_people_search(driver, url, sleep_short, sleep_medium)
+                return success, username, password
         else:
             print_with_timestamp("  [ERROR] Could not find login/submit button")
-            return False
+            return False, username, password
             
     except Exception as e:
         print_with_timestamp(f"  [ERROR] Error during authentication: {e}")
-        return False
+        return False, username, password
 
 def navigate_to_people_search(driver, target_url, sleep_short=2, sleep_medium=3):
     """Navigate to People search page after login
@@ -452,18 +460,94 @@ def navigate_to_people_search(driver, target_url, sleep_short=2, sleep_medium=3)
         print_with_timestamp(f"  [ERROR] Error navigating to People search page: {e}")
         return False
 
-def search_person(driver, first_name, last_name, sleep_short=2, sleep_medium=3):
+def reconnect_browser_and_authenticate(old_driver, search_url, auth_username, auth_password, headless=True):
+    """Reconnect browser by quitting old session and creating new one, then re-authenticate
+    
+    Args:
+        old_driver: Current WebDriver instance (will be quit)
+        search_url: URL to navigate to after reconnection
+        auth_username: Username for authentication
+        auth_password: Password for authentication
+        headless: Run browser in headless mode (default: True)
+    
+    Returns:
+        New WebDriver instance if successful, None otherwise
+    """
+    print_with_timestamp("  [RECONNECT] Quitting hung/crashed browser session...")
+    try:
+        # Try to quit gracefully with a timeout
+        import threading
+        
+        quit_success = [False]
+        quit_error = [None]
+        
+        def quit_driver():
+            try:
+                old_driver.quit()
+                quit_success[0] = True
+            except Exception as e:
+                quit_error[0] = e
+        
+        quit_thread = threading.Thread(target=quit_driver)
+        quit_thread.daemon = True
+        quit_thread.start()
+        quit_thread.join(timeout=5)  # Wait max 5 seconds for quit
+        
+        if not quit_success[0]:
+            print_with_timestamp("  [RECONNECT] Browser quit timed out or failed, trying to kill process...")
+            try:
+                # Try to kill the browser process directly
+                if hasattr(old_driver, 'service') and hasattr(old_driver.service, 'process'):
+                    old_driver.service.process.kill()
+                    print_with_timestamp("  [RECONNECT] Browser process killed")
+            except Exception as kill_error:
+                print_with_timestamp(f"  [RECONNECT] Could not kill browser process: {kill_error}")
+                if quit_error[0]:
+                    print_with_timestamp(f"  [RECONNECT] Original quit error: {quit_error[0]}")
+    except Exception as e:
+        print_with_timestamp(f"  [RECONNECT] Error quitting old browser: {e}, continuing anyway...")
+        pass
+    
+    # Small delay to ensure process cleanup
+    time.sleep(1)
+    
+    print_with_timestamp("  [RECONNECT] Creating new browser session...")
+    try:
+        new_driver = setup_driver(headless=headless)
+        print_with_timestamp("  [RECONNECT] New browser session created")
+        
+        # Re-authenticate with stored credentials
+        print_with_timestamp("  [RECONNECT] Re-authenticating with stored credentials...")
+        auth_success, _, _ = check_and_authenticate(new_driver, search_url, username=auth_username, password=auth_password)
+        
+        if auth_success:
+            print_with_timestamp("  [RECONNECT] Re-authentication successful")
+            return new_driver
+        else:
+            print_with_timestamp("  [RECONNECT] Re-authentication failed")
+            try:
+                new_driver.quit()
+            except:
+                pass
+            return None
+    except Exception as e:
+        print_with_timestamp(f"  [RECONNECT] Error creating new browser session: {e}")
+        return None
+
+def search_person(driver, first_name, last_name, sleep_short=2, sleep_medium=3, retry_auth=None, headless=True):
     """Search for a person by first and last name
     
     Args:
-        driver: WebDriver instance
+        driver: WebDriver instance (may be replaced if reconnection occurs)
         first_name: First name to search for
         last_name: Last name to search for
         sleep_short: Short sleep duration in seconds (default: 2)
         sleep_medium: Medium sleep duration in seconds (default: 3)
+        retry_auth: Optional tuple of (url, username, password, headless) for re-authentication on timeout
+        headless: Run browser in headless mode (default: True)
     
     Returns:
-        True if search was successful, False otherwise
+        Tuple of (success: bool, new_driver: WebDriver or None). If reconnection occurred, new_driver will be the new instance.
     """
     print_with_timestamp(f"\nSearching for {first_name} {last_name}...")
     
@@ -497,9 +581,20 @@ def search_person(driver, first_name, last_name, sleep_short=2, sleep_medium=3):
         # Wait a bit more for page to fully render
         time.sleep(sleep_short)
         
-        # Debug: Print page title and URL
-        print_with_timestamp(f"  Page title: {driver.title}")
-        print_with_timestamp(f"  Current URL: {driver.current_url}")
+        # Debug: Print page title and URL (with error handling for tab crashes)
+        try:
+            print_with_timestamp(f"  Page title: {driver.title}")
+            print_with_timestamp(f"  Current URL: {driver.current_url}")
+        except WebDriverException as e:
+            error_msg = str(e).lower()
+            if 'tab crashed' in error_msg or 'session' in error_msg:
+                print_with_timestamp(f"  [WARNING] Browser tab crashed while accessing page info: {e}")
+                # Will be caught by outer exception handler
+                raise
+            else:
+                # Other WebDriverException, log and continue
+                print_with_timestamp(f"  [WARNING] Error accessing page info: {e}")
+                print_with_timestamp(f"  Current URL: {driver.current_url if hasattr(driver, 'current_url') else 'unknown'}")
         
         # Debug: Find all input fields on the page (including hidden)
         try:
@@ -699,7 +794,7 @@ def search_person(driver, first_name, last_name, sleep_short=2, sleep_medium=3):
         
         if not first_name_field:
             print_with_timestamp("  [ERROR] Could not find first name field after all attempts")
-            return False
+            return False, None
         
         # Find last name field with comprehensive selectors
         last_name_field = None
@@ -763,7 +858,7 @@ def search_person(driver, first_name, last_name, sleep_short=2, sleep_medium=3):
         
         if not last_name_field:
             print_with_timestamp("  [ERROR] Could not find last name field")
-            return False
+            return False, None
         
         # Fill in the fields
         # Check if we already set first name via JavaScript
@@ -844,10 +939,10 @@ def search_person(driver, first_name, last_name, sleep_short=2, sleep_medium=3):
                     return True
                 else:
                     print_with_timestamp("  [ERROR] Could not find search button")
-                    return False
+                    return False, None
             except Exception as e:
                 print_with_timestamp(f"  [ERROR] Could not find search button: {e}")
-                return False
+                return False, None
         
         try:
             search_button.click()
@@ -859,17 +954,53 @@ def search_person(driver, first_name, last_name, sleep_short=2, sleep_medium=3):
                 print_with_timestamp("  Clicked search button via JavaScript (fallback)")
             except:
                 print_with_timestamp("  [ERROR] Could not click search button")
-                return False
+                return False, None
         
         time.sleep(sleep_medium)
         
-        return True
+        return True, None
+        
+    except (ReadTimeoutError, MaxRetryError, TimeoutError, WebDriverException) as e:
+        error_msg = str(e).lower()
+        is_tab_crash = 'tab crashed' in error_msg or 'session' in error_msg
+        is_timeout = isinstance(e, (ReadTimeoutError, MaxRetryError, TimeoutError))
+        
+        if is_tab_crash:
+            print_with_timestamp(f"  [WARNING] Browser tab crashed: {e}")
+        elif is_timeout:
+            print_with_timestamp(f"  [WARNING] Timeout error during search: {e}")
+        else:
+            print_with_timestamp(f"  [WARNING] WebDriver error during search: {e}")
+        
+        print_with_timestamp("  Attempting to reconnect browser and re-authenticate...")
+        
+        # If retry_auth is provided, reconnect browser and re-authenticate
+        if retry_auth:
+            auth_url, auth_username, auth_password = retry_auth
+            try:
+                # Reconnect browser (quit old, create new) and re-authenticate
+                new_driver = reconnect_browser_and_authenticate(driver, auth_url, auth_username, auth_password, headless=headless)
+                if new_driver:
+                    print_with_timestamp("  Browser reconnected and re-authenticated, retrying search...")
+                    # Retry the search with new driver (only once to avoid infinite loop)
+                    return search_person(new_driver, first_name, last_name, sleep_short, sleep_medium, retry_auth=None, headless=headless)
+                else:
+                    print_with_timestamp("  [ERROR] Browser reconnection/re-authentication failed")
+                    return False, None
+            except Exception as reconnect_error:
+                print_with_timestamp(f"  [ERROR] Error during browser reconnection: {reconnect_error}")
+                import traceback
+                traceback.print_exc()
+                return False, None
+        else:
+            print_with_timestamp("  [ERROR] No retry authentication info provided")
+            return False, None
         
     except Exception as e:
         print_with_timestamp(f"  [ERROR] Error during search: {e}")
         import traceback
         traceback.print_exc()
-        return False
+        return False, None
 
 def extract_person_info(driver, first_name, last_name, sleep_short=2, sleep_medium=3):
     """Extract person ID, state, and USEF status from the search results page
@@ -1114,6 +1245,17 @@ def extract_person_info(driver, first_name, last_name, sleep_short=2, sleep_medi
 
 def get_db_connection():
     """Get SQL Server database connection"""
+    # Check if running on LDAHSAR - use Windows authentication if so
+    import socket
+    hostname = socket.gethostname().upper()
+    use_windows_auth = (hostname == 'LDAHSAR')
+    
+    if use_windows_auth:
+        print_with_timestamp(f"[INFO] Running on {hostname}, using Windows authentication")
+    else:
+        # Prompt for password for sa user on other machines
+        password = getpass.getpass("Enter SQL Server password for sa user: ")
+    
     drivers = [
         'ODBC Driver 17 for SQL Server',
         'ODBC Driver 18 for SQL Server',
@@ -1123,9 +1265,16 @@ def get_db_connection():
     
     for driver in drivers:
         try:
-            conn_str = f'DRIVER={{{driver}}};SERVER=localhost\\SQLEXPRESS;DATABASE=HorseShows;Trusted_Connection=yes;'
+            if use_windows_auth:
+                # Use Windows authentication (Trusted Connection)
+                conn_str = f'DRIVER={{{driver}}};SERVER=LDAHSAR\\SQLEXPRESS;DATABASE=HorseShows;Trusted_Connection=yes;'
+            else:
+                # Use SQL Server authentication with sa user
+                conn_str = f'DRIVER={{{driver}}};SERVER=LDAHSAR\\SQLEXPRESS;DATABASE=HorseShows;UID=sa;PWD={password};'
+            
             conn = pyodbc.connect(conn_str)
-            print_with_timestamp(f"[OK] Connected to HorseShows database using driver: {driver}")
+            auth_method = "Windows authentication" if use_windows_auth else "SQL Server authentication (sa)"
+            print_with_timestamp(f"[OK] Connected to HorseShows database using driver: {driver} ({auth_method})")
             return conn
         except Exception as e:
             if driver == drivers[-1]:  # Last driver
@@ -1220,23 +1369,25 @@ def ensure_rider_usef_columns_exist(conn):
     finally:
         cursor.close()
 
-def update_competitors_from_usef(conn, driver, headless=True):
+def update_competitors_from_usef(conn, driver, headless=True, start_from_rider=None):
     """Update Competitors table with USEF information for all riders
     
     Args:
         conn: Database connection
         driver: WebDriver instance (will be created if None)
         headless: Run browser in headless mode (default: True)
+        start_from_rider: Rider name to start from (format: "LastName, FirstName"). 
+                         All riders before this one will be skipped.
     
     Returns:
-        Number of riders updated
+        Tuple of (number of riders updated, driver instance). Driver may be replaced if reconnection occurred.
     """
     print_with_timestamp("\nUpdating Competitors table with USEF information...")
     
     # Ensure columns exist before proceeding
     if not ensure_rider_usef_columns_exist(conn):
         print_with_timestamp("[ERROR] Could not ensure columns exist, aborting")
-        return 0
+        return 0, driver
     
     cursor = conn.cursor()
     try:
@@ -1255,23 +1406,42 @@ def update_competitors_from_usef(conn, driver, headless=True):
         
         if len(riders) == 0:
             print_with_timestamp("No riders found in Competitors table")
-            return 0
+            return 0, driver
+        
+        # Skip to start_from_rider if specified
+        start_index = 0
+        total_riders = len(riders)
+        if start_from_rider:
+            try:
+                start_index = riders.index(start_from_rider)
+                riders = riders[start_index:]
+                print_with_timestamp(f"Starting from rider: {start_from_rider} (skipped {start_index} riders)")
+            except ValueError:
+                print_with_timestamp(f"[WARNING] Rider '{start_from_rider}' not found in list. Starting from beginning.")
+                print_with_timestamp(f"  Available riders start with: {riders[0] if riders else 'N/A'}")
+                start_index = 0
         
         updated_count = 0
         failed_count = 0
         
         # Navigate to USEF search page and authenticate once
         search_url = "https://www.usef.org/search/people"
-        auth_success = check_and_authenticate(driver, search_url)
+        auth_success, auth_username, auth_password = check_and_authenticate(driver, search_url)
         
         if not auth_success:
             print_with_timestamp("[ERROR] Authentication failed, cannot continue")
-            return 0
+            return 0, driver
+        
+                # Store credentials for retry on timeout (include headless flag)
+        retry_auth = (search_url, auth_username, auth_password)
+        
+        # Calculate starting index for display
+        start_display_idx = start_index + 1
         
         # Process each rider
-        for idx, rider_name in enumerate(riders, 1):
+        for idx, rider_name in enumerate(riders, start_display_idx):
             try:
-                print_with_timestamp(f"\n[{idx}/{len(riders)}] Processing rider: {rider_name}")
+                print_with_timestamp(f"\n[{idx}/{total_riders}] Processing rider: {rider_name}")
                 
                 # Skip if already has USEF ID
                 cursor.execute("""
@@ -1294,15 +1464,19 @@ def update_competitors_from_usef(conn, driver, headless=True):
                 
                 print_with_timestamp(f"  Parsed as: First='{first_name}', Last='{last_name}'")
                 
-                # Search for the person
-                search_success = search_person(driver, first_name, last_name)
+                # Search for the person (with retry auth info)
+                search_success, new_driver = search_person(driver, first_name, last_name, retry_auth=retry_auth, headless=headless)
+                if new_driver:
+                    driver = new_driver  # Update driver reference if reconnection occurred
                 if not search_success:
                     print_with_timestamp(f"  [WARNING] Search failed for {rider_name}, trying reversed names...")
                     # Try reversing first and last name
                     first_name_reversed = last_name
                     last_name_reversed = first_name
                     print_with_timestamp(f"  Trying reversed: First='{first_name_reversed}', Last='{last_name_reversed}'")
-                    search_success = search_person(driver, first_name_reversed, last_name_reversed)
+                    search_success, new_driver = search_person(driver, first_name_reversed, last_name_reversed, retry_auth=retry_auth, headless=headless)
+                    if new_driver:
+                        driver = new_driver  # Update driver reference if reconnection occurred
                     if search_success:
                         first_name = first_name_reversed
                         last_name = last_name_reversed
@@ -1325,7 +1499,9 @@ def update_competitors_from_usef(conn, driver, headless=True):
                     first_name_reversed = last_name
                     last_name_reversed = first_name
                     print_with_timestamp(f"  Trying reversed: First='{first_name_reversed}', Last='{last_name_reversed}'")
-                    search_success = search_person(driver, first_name_reversed, last_name_reversed)
+                    search_success, new_driver = search_person(driver, first_name_reversed, last_name_reversed, retry_auth=retry_auth, headless=headless)
+                    if new_driver:
+                        driver = new_driver  # Update driver reference if reconnection occurred
                     if search_success:
                         first_name = first_name_reversed
                         last_name = last_name_reversed
@@ -1385,18 +1561,18 @@ def update_competitors_from_usef(conn, driver, headless=True):
         print_with_timestamp(f"  Failed/Skipped: {failed_count} riders")
         print_with_timestamp(f"{'='*60}\n")
         
-        return updated_count
+        return updated_count, driver
         
     except Exception as e:
         print_with_timestamp(f"[ERROR] Error updating competitors: {e}")
         import traceback
         traceback.print_exc()
         conn.rollback()
-        return 0
+        return 0, driver
     finally:
         cursor.close()
 
-def main(first_name="Ari", last_name="Waelterman", headless=True, update_all_riders=False):
+def main(first_name="Ari", last_name="Waelterman", headless=True, update_all_riders=False, start_from_rider=None):
     """Main function to search for a person on USEF website or update all riders in Competitors table
     
     Args:
@@ -1404,6 +1580,7 @@ def main(first_name="Ari", last_name="Waelterman", headless=True, update_all_rid
         last_name: Last name to search for (default: "Waelterman")
         headless: Run browser in headless mode (default: True)
         update_all_riders: If True, update all riders in Competitors table with USEF information (default: False)
+        start_from_rider: Rider name to start from when updating all riders (format: "LastName, FirstName")
     """
     print_with_timestamp("\n" + "=" * 60)
     print_with_timestamp("USEF Person Search Scraper")
@@ -1425,13 +1602,13 @@ def main(first_name="Ari", last_name="Waelterman", headless=True, update_all_rid
             print_with_timestamp("[OK] Connected to database\n")
             
             # Update all riders
-            update_competitors_from_usef(conn, driver, headless=headless)
+            updated_count, driver = update_competitors_from_usef(conn, driver, headless=headless, start_from_rider=start_from_rider)
             return
         
         # Otherwise, do single person search
         # Navigate to search page and handle authentication
         search_url = "https://www.usef.org/search/people"
-        auth_success = check_and_authenticate(driver, search_url)
+        auth_success, auth_username, auth_password = check_and_authenticate(driver, search_url)
         
         # If authentication was not needed (already logged in), ensure we're on the right page
         if auth_success:
@@ -1443,8 +1620,12 @@ def main(first_name="Ari", last_name="Waelterman", headless=True, update_all_rid
             print_with_timestamp("[ERROR] Authentication failed")
             return
         
-        # Search for the person
-        if not search_person(driver, first_name, last_name):
+        # Search for the person (with retry auth info)
+        retry_auth = (search_url, auth_username, auth_password)
+        search_success, new_driver = search_person(driver, first_name, last_name, retry_auth=retry_auth, headless=headless)
+        if new_driver:
+            driver = new_driver  # Update driver reference if reconnection occurred
+        if not search_success:
             print_with_timestamp("[ERROR] Search failed")
             return
         
@@ -1493,6 +1674,7 @@ if __name__ == '__main__':
     last_name = "Waelterman"
     headless = True
     update_all_riders = False
+    start_from_rider = None
     
     # Parse command-line arguments
     i = 1
@@ -1517,6 +1699,13 @@ if __name__ == '__main__':
             headless = False
         elif arg in ['--update-all', '--update-riders', '-u']:
             update_all_riders = True
+        elif arg in ['--start-from', '--skip-to', '-s']:
+            if i + 1 < len(sys.argv):
+                start_from_rider = sys.argv[i + 1]
+                i += 1
+            else:
+                print_with_timestamp("[ERROR] --start-from requires a rider name (format: 'LastName, FirstName')")
+                sys.exit(1)
         elif arg in ['--help', '-h']:
             print_with_timestamp("Usage: python scrape_usef_person.py [OPTIONS]")
             print_with_timestamp("Options:")
@@ -1524,9 +1713,10 @@ if __name__ == '__main__':
             print_with_timestamp("  --last-name NAME, -l NAME: Last name to search for (default: Waelterman)")
             print_with_timestamp("  --no-headless, --visible: Run browser in visible mode (default: headless)")
             print_with_timestamp("  --update-all, --update-riders, -u: Update all riders in Competitors table with USEF information")
+            print_with_timestamp("  --start-from RIDER, --skip-to RIDER, -s RIDER: Start processing from this rider (format: 'LastName, FirstName')")
             sys.exit(0)
         
         i += 1
     
-    main(first_name=first_name, last_name=last_name, headless=headless, update_all_riders=update_all_riders)
+    main(first_name=first_name, last_name=last_name, headless=headless, update_all_riders=update_all_riders, start_from_rider=start_from_rider)
 

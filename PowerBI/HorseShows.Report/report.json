@@ -1,0 +1,228 @@
+{
+  "config": "{}",
+  "layoutOptimization": 0,
+  "resourcePackages": [
+    {
+      "resourcePackage": {
+        "name": "SharedResources",
+        "items": []
+      }
+    }
+  ],
+  "sections": [
+    {
+      "name": "0adc96db-d155-4708-82c2-f094067b712b",
+      "displayName": "Executive Dashboard",
+      "config": "{}",
+      "visualContainers": [
+        {
+          "x": 10,
+          "y": 10,
+          "z": 1000,
+          "width": 300,
+          "height": 120,
+          "config": "{\"name\": \"e593912c-8ebc-40a7-a155-029d3a5f775f\", \"layouts\": [{\"id\": 0, \"position\": {\"x\": 10, \"y\": 10, \"z\": 1000, \"width\": 300, \"height\": 120}}], \"singleVisual\": {\"visualType\": \"card\", \"projections\": {\"Values\": [{\"queryRef\": \"Total Shows\"}]}, \"prototypeQuery\": {\"Version\": 2, \"From\": [{\"Name\": \"_Measures\", \"Entity\": \"_Measures\"}], \"Select\": [{\"Measure\": {\"Expression\": {\"SourceRef\": {\"Source\": \"_Measures\"}}, \"Property\": \"Total Shows\"}, \"Name\": \"_Measures.Total Shows\"}]}, \"vcObjects\": {\"title\": [{\"properties\": {\"text\": {\"expr\": {\"Literal\": {\"Value\": \"'Total Shows'\"}}}, \"show\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}}}]}}}"
+        },
+        {
+          "x": 330,
+          "y": 10,
+          "z": 1001,
+          "width": 300,
+          "height": 120,
+          "config": "{\"name\": \"bebc814a-e3a6-4137-9a9d-70565040e54b\", \"layouts\": [{\"id\": 0, \"position\": {\"x\": 330, \"y\": 10, \"z\": 1001, \"width\": 300, \"height\": 120}}], \"singleVisual\": {\"visualType\": \"card\", \"projections\": {\"Values\": [{\"queryRef\": \"Total Entries\"}]}, \"prototypeQuery\": {\"Version\": 2, \"From\": [{\"Name\": \"_Measures\", \"Entity\": \"_Measures\"}], \"Select\": [{\"Measure\": {\"Expression\": {\"SourceRef\": {\"Source\": \"_Measures\"}}, \"Property\": \"Total Entries\"}, \"Name\": \"_Measures.Total Entries\"}]}, \"vcObjects\": {\"title\": [{\"properties\": {\"text\": {\"expr\": {\"Literal\": {\"Value\": \"'Total Entries'\"}}}, \"show\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}}}]}}}"
+        },
+        {
+          "x": 650,
+          "y": 10,
+          "z": 1002,
+          "width": 300,
+          "height": 120,
+          "config": "{\"name\": \"a9e407e7-7cf9-4372-b79e-fb3320f0163d\", \"layouts\": [{\"id\": 0, \"position\": {\"x\": 650, \"y\": 10, \"z\": 1002, \"width\": 300, \"height\": 120}}], \"singleVisual\": {\"visualType\": \"card\", \"projections\": {\"Values\": [{\"queryRef\": \"First Places\"}]}, \"prototypeQuery\": {\"Version\": 2, \"From\": [{\"Name\": \"_Measures\", \"Entity\": \"_Measures\"}], \"Select\": [{\"Measure\": {\"Expression\": {\"SourceRef\": {\"Source\": \"_Measures\"}}, \"Property\": \"First Places\"}, \"Name\": \"_Measures.First Places\"}]}, \"vcObjects\": {\"title\": [{\"properties\": {\"text\": {\"expr\": {\"Literal\": {\"Value\": \"'First Places'\"}}}, \"show\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}}}]}}}"
+        },
+        {
+          "x": 970,
+          "y": 10,
+          "z": 1003,
+          "width": 300,
+          "height": 120,
+          "config": "{\"name\": \"e57f61f5-f7aa-4cdd-af67-ffd2793e04ee\", \"layouts\": [{\"id\": 0, \"position\": {\"x\": 970, \"y\": 10, \"z\": 1003, \"width\": 300, \"height\": 120}}], \"singleVisual\": {\"visualType\": \"card\", \"projections\": {\"Values\": [{\"queryRef\": \"Total Prize Money\"}]}, \"prototypeQuery\": {\"Version\": 2, \"From\": [{\"Name\": \"_Measures\", \"Entity\": \"_Measures\"}], \"Select\": [{\"Measure\": {\"Expression\": {\"SourceRef\": {\"Source\": \"_Measures\"}}, \"Property\": \"Total Prize Money\"}, \"Name\": \"_Measures.Total Prize Money\"}]}, \"vcObjects\": {\"title\": [{\"properties\": {\"text\": {\"expr\": {\"Literal\": {\"Value\": \"'Total Prize Money'\"}}}, \"show\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}}}]}}}"
+        },
+        {
+          "x": 10,
+          "y": 150,
+          "z": 1004,
+          "width": 1260,
+          "height": 250,
+          "config": "{\"name\": \"10bb6ffe-bfb4-4d60-b6dd-9614cd202b24\", \"layouts\": [{\"id\": 0, \"position\": {\"x\": 10, \"y\": 150, \"z\": 1004, \"width\": 1260, \"height\": 250}}], \"singleVisual\": {\"visualType\": \"lineChart\", \"projections\": {\"Category\": [{\"queryRef\": \"dimDate.MonthName\"}], \"Y\": [{\"queryRef\": \"_Measures.Total Entries\"}], \"Series\": [{\"queryRef\": \"dimShows.Year\"}]}, \"prototypeQuery\": {\"Version\": 2, \"From\": [{\"Name\": \"dimDate\", \"Entity\": \"dimDate\"}, {\"Name\": \"dimShows\", \"Entity\": \"dimShows\"}, {\"Name\": \"_Measures\", \"Entity\": \"_Measures\"}], \"Select\": [{\"Column\": {\"Expression\": {\"SourceRef\": {\"Source\": \"dimDate\"}}, \"Property\": \"MonthName\"}, \"Name\": \"dimDate.MonthName\"}, {\"Column\": {\"Expression\": {\"SourceRef\": {\"Source\": \"dimShows\"}}, \"Property\": \"Year\"}, \"Name\": \"dimShows.Year\"}, {\"Measure\": {\"Expression\": {\"SourceRef\": {\"Source\": \"_Measures\"}}, \"Property\": \"Total Entries\"}, \"Name\": \"_Measures.Total Entries\"}]}, \"vcObjects\": {\"title\": [{\"properties\": {\"text\": {\"expr\": {\"Literal\": {\"Value\": \"'Entries by Month'\"}}}, \"show\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}}}]}}}"
+        },
+        {
+          "x": 10,
+          "y": 420,
+          "z": 1005,
+          "width": 620,
+          "height": 290,
+          "config": "{\"name\": \"b2ced7fb-18b0-487f-ac8e-418580c222cc\", \"layouts\": [{\"id\": 0, \"position\": {\"x\": 10, \"y\": 420, \"z\": 1005, \"width\": 620, \"height\": 290}}], \"singleVisual\": {\"visualType\": \"barChart\", \"projections\": {\"Category\": [{\"queryRef\": \"dimShows.ShowName\"}], \"Y\": [{\"queryRef\": \"_Measures.Total Entries\"}]}, \"prototypeQuery\": {\"Version\": 2, \"From\": [{\"Name\": \"dimShows\", \"Entity\": \"dimShows\"}, {\"Name\": \"_Measures\", \"Entity\": \"_Measures\"}], \"Select\": [{\"Column\": {\"Expression\": {\"SourceRef\": {\"Source\": \"dimShows\"}}, \"Property\": \"ShowName\"}, \"Name\": \"dimShows.ShowName\"}, {\"Measure\": {\"Expression\": {\"SourceRef\": {\"Source\": \"_Measures\"}}, \"Property\": \"Total Entries\"}, \"Name\": \"_Measures.Total Entries\"}]}, \"vcObjects\": {\"title\": [{\"properties\": {\"text\": {\"expr\": {\"Literal\": {\"Value\": \"'Top 10 Shows by Entries'\"}}}, \"show\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}}}]}}}"
+        }
+      ],
+      "height": 720,
+      "width": 1280
+    },
+    {
+      "name": "e1653a9a-e738-4e66-929d-924ec45df93c",
+      "displayName": "Rider Analysis",
+      "config": "{}",
+      "visualContainers": [
+        {
+          "x": 10,
+          "y": 10,
+          "z": 2000,
+          "width": 300,
+          "height": 80,
+          "config": "{\"name\": \"21907054-b8b2-42a5-b8d9-0907f7d1295b\", \"layouts\": [{\"id\": 0, \"position\": {\"x\": 10, \"y\": 10, \"z\": 2000, \"width\": 300, \"height\": 80}}], \"singleVisual\": {\"visualType\": \"slicer\", \"projections\": {\"Values\": [{\"queryRef\": \"dimRiders.RiderName\"}]}, \"prototypeQuery\": {\"Version\": 2, \"From\": [{\"Name\": \"dimRiders\", \"Entity\": \"dimRiders\"}], \"Select\": [{\"Column\": {\"Expression\": {\"SourceRef\": {\"Source\": \"dimRiders\"}}, \"Property\": \"RiderName\"}, \"Name\": \"dimRiders.RiderName\"}]}, \"vcObjects\": {\"title\": [{\"properties\": {\"text\": {\"expr\": {\"Literal\": {\"Value\": \"'Select Rider'\"}}}, \"show\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}}}]}}}"
+        },
+        {
+          "x": 330,
+          "y": 10,
+          "z": 2001,
+          "width": 150,
+          "height": 80,
+          "config": "{\"name\": \"dd272687-f312-4628-80e7-c48b7dd48cf7\", \"layouts\": [{\"id\": 0, \"position\": {\"x\": 330, \"y\": 10, \"z\": 2001, \"width\": 150, \"height\": 80}}], \"singleVisual\": {\"visualType\": \"slicer\", \"projections\": {\"Values\": [{\"queryRef\": \"dimShows.Year\"}]}, \"prototypeQuery\": {\"Version\": 2, \"From\": [{\"Name\": \"dimShows\", \"Entity\": \"dimShows\"}], \"Select\": [{\"Column\": {\"Expression\": {\"SourceRef\": {\"Source\": \"dimShows\"}}, \"Property\": \"Year\"}, \"Name\": \"dimShows.Year\"}]}, \"vcObjects\": {\"title\": [{\"properties\": {\"text\": {\"expr\": {\"Literal\": {\"Value\": \"'Select Year'\"}}}, \"show\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}}}]}}}"
+        },
+        {
+          "x": 10,
+          "y": 110,
+          "z": 2002,
+          "width": 1260,
+          "height": 600,
+          "config": "{\"name\": \"c7bbd226-23b2-4d75-9ad0-5a09b816b94c\", \"layouts\": [{\"id\": 0, \"position\": {\"x\": 10, \"y\": 110, \"z\": 2002, \"width\": 1260, \"height\": 600}}], \"singleVisual\": {\"visualType\": \"tableEx\", \"projections\": {\"Values\": [{\"queryRef\": \"dimRiders.RiderName\"}, {\"queryRef\": \"_Measures.Total Entries\"}, {\"queryRef\": \"_Measures.First Places\"}, {\"queryRef\": \"_Measures.Top 3 Places\"}, {\"queryRef\": \"_Measures.Placement Rate %\"}, {\"queryRef\": \"_Measures.Total Prize Money\"}]}, \"prototypeQuery\": {\"Version\": 2, \"From\": [{\"Name\": \"dimRiders\", \"Entity\": \"dimRiders\"}, {\"Name\": \"_Measures\", \"Entity\": \"_Measures\"}, {\"Name\": \"_Measures\", \"Entity\": \"_Measures\"}, {\"Name\": \"_Measures\", \"Entity\": \"_Measures\"}, {\"Name\": \"_Measures\", \"Entity\": \"_Measures\"}, {\"Name\": \"_Measures\", \"Entity\": \"_Measures\"}], \"Select\": [{\"Column\": {\"Expression\": {\"SourceRef\": {\"Source\": \"dimRiders\"}}, \"Property\": \"RiderName\"}, \"Name\": \"dimRiders.RiderName\"}, {\"Measure\": {\"Expression\": {\"SourceRef\": {\"Source\": \"_Measures\"}}, \"Property\": \"Total Entries\"}, \"Name\": \"_Measures.Total Entries\"}, {\"Measure\": {\"Expression\": {\"SourceRef\": {\"Source\": \"_Measures\"}}, \"Property\": \"First Places\"}, \"Name\": \"_Measures.First Places\"}, {\"Measure\": {\"Expression\": {\"SourceRef\": {\"Source\": \"_Measures\"}}, \"Property\": \"Top 3 Places\"}, \"Name\": \"_Measures.Top 3 Places\"}, {\"Measure\": {\"Expression\": {\"SourceRef\": {\"Source\": \"_Measures\"}}, \"Property\": \"Placement Rate %\"}, \"Name\": \"_Measures.Placement Rate %\"}, {\"Measure\": {\"Expression\": {\"SourceRef\": {\"Source\": \"_Measures\"}}, \"Property\": \"Total Prize Money\"}, \"Name\": \"_Measures.Total Prize Money\"}]}, \"vcObjects\": {\"title\": [{\"properties\": {\"text\": {\"expr\": {\"Literal\": {\"Value\": \"'Rider Leaderboard'\"}}}, \"show\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}}}], \"grid\": [{\"properties\": {\"gridVertical\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}, \"gridHorizontal\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}}}]}}}"
+        }
+      ],
+      "height": 720,
+      "width": 1280
+    },
+    {
+      "name": "f32d4cbc-7dc3-4b41-8f58-cfc55d2239c1",
+      "displayName": "Horse Analysis",
+      "config": "{}",
+      "visualContainers": [
+        {
+          "x": 10,
+          "y": 10,
+          "z": 3000,
+          "width": 300,
+          "height": 80,
+          "config": "{\"name\": \"bad0b1f5-5273-436a-8e69-fb9fc9ca63fe\", \"layouts\": [{\"id\": 0, \"position\": {\"x\": 10, \"y\": 10, \"z\": 3000, \"width\": 300, \"height\": 80}}], \"singleVisual\": {\"visualType\": \"slicer\", \"projections\": {\"Values\": [{\"queryRef\": \"dimHorses.HorseName\"}]}, \"prototypeQuery\": {\"Version\": 2, \"From\": [{\"Name\": \"dimHorses\", \"Entity\": \"dimHorses\"}], \"Select\": [{\"Column\": {\"Expression\": {\"SourceRef\": {\"Source\": \"dimHorses\"}}, \"Property\": \"HorseName\"}, \"Name\": \"dimHorses.HorseName\"}]}, \"vcObjects\": {\"title\": [{\"properties\": {\"text\": {\"expr\": {\"Literal\": {\"Value\": \"'Select Horse'\"}}}, \"show\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}}}]}}}"
+        },
+        {
+          "x": 330,
+          "y": 10,
+          "z": 3001,
+          "width": 300,
+          "height": 80,
+          "config": "{\"name\": \"ef1a9b41-17f6-4032-9863-54bf76f48dab\", \"layouts\": [{\"id\": 0, \"position\": {\"x\": 330, \"y\": 10, \"z\": 3001, \"width\": 300, \"height\": 80}}], \"singleVisual\": {\"visualType\": \"slicer\", \"projections\": {\"Values\": [{\"queryRef\": \"dimHorses.OwnerName\"}]}, \"prototypeQuery\": {\"Version\": 2, \"From\": [{\"Name\": \"dimHorses\", \"Entity\": \"dimHorses\"}], \"Select\": [{\"Column\": {\"Expression\": {\"SourceRef\": {\"Source\": \"dimHorses\"}}, \"Property\": \"OwnerName\"}, \"Name\": \"dimHorses.OwnerName\"}]}, \"vcObjects\": {\"title\": [{\"properties\": {\"text\": {\"expr\": {\"Literal\": {\"Value\": \"'Select Owner'\"}}}, \"show\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}}}]}}}"
+        },
+        {
+          "x": 10,
+          "y": 110,
+          "z": 3002,
+          "width": 1260,
+          "height": 600,
+          "config": "{\"name\": \"a929fec9-1d75-4d03-a6fe-570a17421210\", \"layouts\": [{\"id\": 0, \"position\": {\"x\": 10, \"y\": 110, \"z\": 3002, \"width\": 1260, \"height\": 600}}], \"singleVisual\": {\"visualType\": \"tableEx\", \"projections\": {\"Values\": [{\"queryRef\": \"dimHorses.HorseName\"}, {\"queryRef\": \"dimHorses.OwnerName\"}, {\"queryRef\": \"_Measures.Total Entries\"}, {\"queryRef\": \"_Measures.First Places\"}, {\"queryRef\": \"_Measures.Top 3 Places\"}, {\"queryRef\": \"_Measures.Placement Rate %\"}]}, \"prototypeQuery\": {\"Version\": 2, \"From\": [{\"Name\": \"dimHorses\", \"Entity\": \"dimHorses\"}, {\"Name\": \"dimHorses\", \"Entity\": \"dimHorses\"}, {\"Name\": \"_Measures\", \"Entity\": \"_Measures\"}, {\"Name\": \"_Measures\", \"Entity\": \"_Measures\"}, {\"Name\": \"_Measures\", \"Entity\": \"_Measures\"}, {\"Name\": \"_Measures\", \"Entity\": \"_Measures\"}], \"Select\": [{\"Column\": {\"Expression\": {\"SourceRef\": {\"Source\": \"dimHorses\"}}, \"Property\": \"HorseName\"}, \"Name\": \"dimHorses.HorseName\"}, {\"Column\": {\"Expression\": {\"SourceRef\": {\"Source\": \"dimHorses\"}}, \"Property\": \"OwnerName\"}, \"Name\": \"dimHorses.OwnerName\"}, {\"Measure\": {\"Expression\": {\"SourceRef\": {\"Source\": \"_Measures\"}}, \"Property\": \"Total Entries\"}, \"Name\": \"_Measures.Total Entries\"}, {\"Measure\": {\"Expression\": {\"SourceRef\": {\"Source\": \"_Measures\"}}, \"Property\": \"First Places\"}, \"Name\": \"_Measures.First Places\"}, {\"Measure\": {\"Expression\": {\"SourceRef\": {\"Source\": \"_Measures\"}}, \"Property\": \"Top 3 Places\"}, \"Name\": \"_Measures.Top 3 Places\"}, {\"Measure\": {\"Expression\": {\"SourceRef\": {\"Source\": \"_Measures\"}}, \"Property\": \"Placement Rate %\"}, \"Name\": \"_Measures.Placement Rate %\"}]}, \"vcObjects\": {\"title\": [{\"properties\": {\"text\": {\"expr\": {\"Literal\": {\"Value\": \"'Horse Leaderboard'\"}}}, \"show\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}}}], \"grid\": [{\"properties\": {\"gridVertical\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}, \"gridHorizontal\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}}}]}}}"
+        }
+      ],
+      "height": 720,
+      "width": 1280
+    },
+    {
+      "name": "a5032da0-0150-4128-a953-4bf2ef1f7152",
+      "displayName": "Trainer Analysis",
+      "config": "{}",
+      "visualContainers": [
+        {
+          "x": 10,
+          "y": 10,
+          "z": 4000,
+          "width": 400,
+          "height": 80,
+          "config": "{\"name\": \"8856d8fd-4ed2-49de-90fa-e98448d38246\", \"layouts\": [{\"id\": 0, \"position\": {\"x\": 10, \"y\": 10, \"z\": 4000, \"width\": 400, \"height\": 80}}], \"singleVisual\": {\"visualType\": \"slicer\", \"projections\": {\"Values\": [{\"queryRef\": \"dimTrainers.TrainerName\"}]}, \"prototypeQuery\": {\"Version\": 2, \"From\": [{\"Name\": \"dimTrainers\", \"Entity\": \"dimTrainers\"}], \"Select\": [{\"Column\": {\"Expression\": {\"SourceRef\": {\"Source\": \"dimTrainers\"}}, \"Property\": \"TrainerName\"}, \"Name\": \"dimTrainers.TrainerName\"}]}, \"vcObjects\": {\"title\": [{\"properties\": {\"text\": {\"expr\": {\"Literal\": {\"Value\": \"'Select Trainer'\"}}}, \"show\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}}}]}}}"
+        },
+        {
+          "x": 10,
+          "y": 110,
+          "z": 4001,
+          "width": 1260,
+          "height": 600,
+          "config": "{\"name\": \"acf14ffb-ebbe-4f59-869c-8246295e6f8d\", \"layouts\": [{\"id\": 0, \"position\": {\"x\": 10, \"y\": 110, \"z\": 4001, \"width\": 1260, \"height\": 600}}], \"singleVisual\": {\"visualType\": \"tableEx\", \"projections\": {\"Values\": [{\"queryRef\": \"dimTrainers.TrainerName\"}, {\"queryRef\": \"_Measures.Unique Riders\"}, {\"queryRef\": \"_Measures.Unique Horses\"}, {\"queryRef\": \"_Measures.First Places\"}, {\"queryRef\": \"_Measures.Placement Rate %\"}, {\"queryRef\": \"_Measures.Total Prize Money\"}]}, \"prototypeQuery\": {\"Version\": 2, \"From\": [{\"Name\": \"dimTrainers\", \"Entity\": \"dimTrainers\"}, {\"Name\": \"_Measures\", \"Entity\": \"_Measures\"}, {\"Name\": \"_Measures\", \"Entity\": \"_Measures\"}, {\"Name\": \"_Measures\", \"Entity\": \"_Measures\"}, {\"Name\": \"_Measures\", \"Entity\": \"_Measures\"}, {\"Name\": \"_Measures\", \"Entity\": \"_Measures\"}], \"Select\": [{\"Column\": {\"Expression\": {\"SourceRef\": {\"Source\": \"dimTrainers\"}}, \"Property\": \"TrainerName\"}, \"Name\": \"dimTrainers.TrainerName\"}, {\"Measure\": {\"Expression\": {\"SourceRef\": {\"Source\": \"_Measures\"}}, \"Property\": \"Unique Riders\"}, \"Name\": \"_Measures.Unique Riders\"}, {\"Measure\": {\"Expression\": {\"SourceRef\": {\"Source\": \"_Measures\"}}, \"Property\": \"Unique Horses\"}, \"Name\": \"_Measures.Unique Horses\"}, {\"Measure\": {\"Expression\": {\"SourceRef\": {\"Source\": \"_Measures\"}}, \"Property\": \"First Places\"}, \"Name\": \"_Measures.First Places\"}, {\"Measure\": {\"Expression\": {\"SourceRef\": {\"Source\": \"_Measures\"}}, \"Property\": \"Placement Rate %\"}, \"Name\": \"_Measures.Placement Rate %\"}, {\"Measure\": {\"Expression\": {\"SourceRef\": {\"Source\": \"_Measures\"}}, \"Property\": \"Total Prize Money\"}, \"Name\": \"_Measures.Total Prize Money\"}]}, \"vcObjects\": {\"title\": [{\"properties\": {\"text\": {\"expr\": {\"Literal\": {\"Value\": \"'Trainer Leaderboard'\"}}}, \"show\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}}}], \"grid\": [{\"properties\": {\"gridVertical\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}, \"gridHorizontal\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}}}]}}}"
+        }
+      ],
+      "height": 720,
+      "width": 1280
+    },
+    {
+      "name": "6960773c-dd6b-4741-b844-22be4eeee1d3",
+      "displayName": "Show Analysis",
+      "config": "{}",
+      "visualContainers": [
+        {
+          "x": 10,
+          "y": 10,
+          "z": 5000,
+          "width": 400,
+          "height": 80,
+          "config": "{\"name\": \"92804255-dd69-4aad-8ad6-c9dee14c1206\", \"layouts\": [{\"id\": 0, \"position\": {\"x\": 10, \"y\": 10, \"z\": 5000, \"width\": 400, \"height\": 80}}], \"singleVisual\": {\"visualType\": \"slicer\", \"projections\": {\"Values\": [{\"queryRef\": \"dimShows.ShowName\"}]}, \"prototypeQuery\": {\"Version\": 2, \"From\": [{\"Name\": \"dimShows\", \"Entity\": \"dimShows\"}], \"Select\": [{\"Column\": {\"Expression\": {\"SourceRef\": {\"Source\": \"dimShows\"}}, \"Property\": \"ShowName\"}, \"Name\": \"dimShows.ShowName\"}]}, \"vcObjects\": {\"title\": [{\"properties\": {\"text\": {\"expr\": {\"Literal\": {\"Value\": \"'Select Show'\"}}}, \"show\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}}}]}}}"
+        },
+        {
+          "x": 430,
+          "y": 10,
+          "z": 5001,
+          "width": 300,
+          "height": 80,
+          "config": "{\"name\": \"b58dc25e-0f95-4d0b-84d1-d75cdb859694\", \"layouts\": [{\"id\": 0, \"position\": {\"x\": 430, \"y\": 10, \"z\": 5001, \"width\": 300, \"height\": 80}}], \"singleVisual\": {\"visualType\": \"slicer\", \"projections\": {\"Values\": [{\"queryRef\": \"dimClasses.DivisionName\"}]}, \"prototypeQuery\": {\"Version\": 2, \"From\": [{\"Name\": \"dimClasses\", \"Entity\": \"dimClasses\"}], \"Select\": [{\"Column\": {\"Expression\": {\"SourceRef\": {\"Source\": \"dimClasses\"}}, \"Property\": \"DivisionName\"}, \"Name\": \"dimClasses.DivisionName\"}]}, \"vcObjects\": {\"title\": [{\"properties\": {\"text\": {\"expr\": {\"Literal\": {\"Value\": \"'Select Division'\"}}}, \"show\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}}}]}}}"
+        },
+        {
+          "x": 10,
+          "y": 110,
+          "z": 5002,
+          "width": 1260,
+          "height": 600,
+          "config": "{\"name\": \"07a729df-fca6-4fab-b6e4-33eaae3b1a74\", \"layouts\": [{\"id\": 0, \"position\": {\"x\": 10, \"y\": 110, \"z\": 5002, \"width\": 1260, \"height\": 600}}], \"singleVisual\": {\"visualType\": \"tableEx\", \"projections\": {\"Values\": [{\"queryRef\": \"dimClasses.ClassNumber\"}, {\"queryRef\": \"dimClasses.ClassName\"}, {\"queryRef\": \"dimClasses.DivisionName\"}, {\"queryRef\": \"dimClasses.TotalEntries\"}]}, \"prototypeQuery\": {\"Version\": 2, \"From\": [{\"Name\": \"dimClasses\", \"Entity\": \"dimClasses\"}, {\"Name\": \"dimClasses\", \"Entity\": \"dimClasses\"}, {\"Name\": \"dimClasses\", \"Entity\": \"dimClasses\"}, {\"Name\": \"dimClasses\", \"Entity\": \"dimClasses\"}], \"Select\": [{\"Column\": {\"Expression\": {\"SourceRef\": {\"Source\": \"dimClasses\"}}, \"Property\": \"ClassNumber\"}, \"Name\": \"dimClasses.ClassNumber\"}, {\"Column\": {\"Expression\": {\"SourceRef\": {\"Source\": \"dimClasses\"}}, \"Property\": \"ClassName\"}, \"Name\": \"dimClasses.ClassName\"}, {\"Column\": {\"Expression\": {\"SourceRef\": {\"Source\": \"dimClasses\"}}, \"Property\": \"DivisionName\"}, \"Name\": \"dimClasses.DivisionName\"}, {\"Column\": {\"Expression\": {\"SourceRef\": {\"Source\": \"dimClasses\"}}, \"Property\": \"TotalEntries\"}, \"Name\": \"dimClasses.TotalEntries\"}]}, \"vcObjects\": {\"title\": [{\"properties\": {\"text\": {\"expr\": {\"Literal\": {\"Value\": \"'Class Results'\"}}}, \"show\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}}}], \"grid\": [{\"properties\": {\"gridVertical\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}, \"gridHorizontal\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}}}]}}}"
+        }
+      ],
+      "height": 720,
+      "width": 1280
+    },
+    {
+      "name": "91a40f8c-dc1e-4c80-942b-ea78ba542104",
+      "displayName": "Trends & Comparisons",
+      "config": "{}",
+      "visualContainers": [
+        {
+          "x": 10,
+          "y": 10,
+          "z": 6000,
+          "width": 200,
+          "height": 80,
+          "config": "{\"name\": \"a067ebf8-8dd6-4b41-bdb1-0d441b301e17\", \"layouts\": [{\"id\": 0, \"position\": {\"x\": 10, \"y\": 10, \"z\": 6000, \"width\": 200, \"height\": 80}}], \"singleVisual\": {\"visualType\": \"slicer\", \"projections\": {\"Values\": [{\"queryRef\": \"dimShows.Year\"}]}, \"prototypeQuery\": {\"Version\": 2, \"From\": [{\"Name\": \"dimShows\", \"Entity\": \"dimShows\"}], \"Select\": [{\"Column\": {\"Expression\": {\"SourceRef\": {\"Source\": \"dimShows\"}}, \"Property\": \"Year\"}, \"Name\": \"dimShows.Year\"}]}, \"vcObjects\": {\"title\": [{\"properties\": {\"text\": {\"expr\": {\"Literal\": {\"Value\": \"'Select Year'\"}}}, \"show\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}}}]}}}"
+        },
+        {
+          "x": 230,
+          "y": 10,
+          "z": 6001,
+          "width": 200,
+          "height": 80,
+          "config": "{\"name\": \"46ff7414-788f-493b-a13b-3b645b6b9f2f\", \"layouts\": [{\"id\": 0, \"position\": {\"x\": 230, \"y\": 10, \"z\": 6001, \"width\": 200, \"height\": 80}}], \"singleVisual\": {\"visualType\": \"slicer\", \"projections\": {\"Values\": [{\"queryRef\": \"dimShows.StateProv\"}]}, \"prototypeQuery\": {\"Version\": 2, \"From\": [{\"Name\": \"dimShows\", \"Entity\": \"dimShows\"}], \"Select\": [{\"Column\": {\"Expression\": {\"SourceRef\": {\"Source\": \"dimShows\"}}, \"Property\": \"StateProv\"}, \"Name\": \"dimShows.StateProv\"}]}, \"vcObjects\": {\"title\": [{\"properties\": {\"text\": {\"expr\": {\"Literal\": {\"Value\": \"'Select State'\"}}}, \"show\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}}}]}}}"
+        },
+        {
+          "x": 10,
+          "y": 110,
+          "z": 6002,
+          "width": 1260,
+          "height": 600,
+          "config": "{\"name\": \"5af89ded-dbe3-432e-81d0-5a25a82c895a\", \"layouts\": [{\"id\": 0, \"position\": {\"x\": 10, \"y\": 110, \"z\": 6002, \"width\": 1260, \"height\": 600}}], \"singleVisual\": {\"visualType\": \"barChart\", \"projections\": {\"Category\": [{\"queryRef\": \"dimShows.Year\"}], \"Y\": [{\"queryRef\": \"_Measures.Total Entries\"}]}, \"prototypeQuery\": {\"Version\": 2, \"From\": [{\"Name\": \"dimShows\", \"Entity\": \"dimShows\"}, {\"Name\": \"_Measures\", \"Entity\": \"_Measures\"}], \"Select\": [{\"Column\": {\"Expression\": {\"SourceRef\": {\"Source\": \"dimShows\"}}, \"Property\": \"Year\"}, \"Name\": \"dimShows.Year\"}, {\"Measure\": {\"Expression\": {\"SourceRef\": {\"Source\": \"_Measures\"}}, \"Property\": \"Total Entries\"}, \"Name\": \"_Measures.Total Entries\"}]}, \"vcObjects\": {\"title\": [{\"properties\": {\"text\": {\"expr\": {\"Literal\": {\"Value\": \"'Year Over Year Comparison'\"}}}, \"show\": {\"expr\": {\"Literal\": {\"Value\": \"true\"}}}}}]}}}"
+        }
+      ],
+      "height": 720,
+      "width": 1280
+    }
+  ]
+}
