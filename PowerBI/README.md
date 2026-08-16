@@ -33,6 +33,7 @@ Double-click `HorseShows.pbip` in Power BI Desktop
 |------|---------|
 | **VISUALS_COMPLETE.md** | 📖 **Read this - visuals are built!** |
 | **HorseShows.pbip** | 🎯 **The report file - open this!** |
+| **07_Drill_Through_Setup.md** | 🔗 **How to add drill-through (5 min)** |
 | `01_PowerBI_Views.sql` | Database views (run first) |
 | `generate_visuals.py` | Python script that generated visuals |
 | `05_Visual_Recipes.md` | Reference for what visuals were built |

@@ -1,0 +1,66 @@
+// ClassNumberSort - Calculated Column
+// Add this to the ShowClass table (or whichever table contains ClassNumber)
+// This creates a sortable value for class numbers with complex patterns
+
+ClassNumberSort = 
+VAR ClassNum = ShowClass[ClassNumber]
+VAR HasDigits = IF(LEN(ClassNum) > 0, NOT(ISBLANK(SEARCH("[0-9]", ClassNum, 1, BLANK()))), FALSE)
+VAR FirstDigitPos = IF(HasDigits, SEARCH("[0-9]", ClassNum, 1, BLANK()), BLANK())
+
+// Check if entire string is a pure number
+VAR IsPureNumber = NOT(ISERROR(VALUE(ClassNum)))
+
+// Extract prefix (everything before first digit)
+VAR Prefix = IF(HasDigits && NOT(IsPureNumber), LEFT(ClassNum, FirstDigitPos - 1), "")
+
+// Extract numeric portion (from first digit until first non-digit/non-decimal)
+VAR NumericPart = 
+    IF(HasDigits,
+        VAR AfterFirstDigit = MID(ClassNum, FirstDigitPos, LEN(ClassNum))
+        VAR NumericString = 
+            // Try to find first non-numeric character after the number starts
+            VAR FirstNonNumericPos = SEARCH("[^0-9.]", AfterFirstDigit, 1, BLANK())
+            RETURN
+                IF(ISBLANK(FirstNonNumericPos),
+                    AfterFirstDigit,  // All numeric to the end
+                    LEFT(AfterFirstDigit, FirstNonNumericPos - 1)
+                )
+        RETURN VALUE(NumericString)
+    ,
+        BLANK()
+    )
+
+// Extract suffix (everything after the numeric part)
+VAR Suffix = 
+    IF(HasDigits && NOT(IsPureNumber),
+        VAR AfterFirstDigit = MID(ClassNum, FirstDigitPos, LEN(ClassNum))
+        VAR FirstNonNumericPos = SEARCH("[^0-9.]", AfterFirstDigit, 1, BLANK())
+        RETURN
+            IF(NOT(ISBLANK(FirstNonNumericPos)),
+                MID(ClassNum, FirstDigitPos + FirstNonNumericPos - 1, LEN(ClassNum)),
+                ""
+            )
+    ,
+        ""
+    )
+
+// Build sort key: CategoryType|NumericPart|Prefix|Suffix|OriginalClass
+// Category 0 = Pure numbers
+// Category 1 = Prefix+number+suffix
+// Category 2 = Pure strings
+
+VAR CategoryType = 
+    IF(IsPureNumber, 0,
+        IF(HasDigits, 1, 2)
+    )
+
+// Create a composite sort string with padding for proper sorting
+VAR SortKey = 
+    FORMAT(CategoryType, "0") & "|" &
+    // Numeric part (padded to 10 digits with 2 decimals for consistent sorting)
+    IF(NOT(ISBLANK(NumericPart)), FORMAT(NumericPart, "0000000000.00"), "0000000000.00") & "|" &
+    Prefix & "|" &
+    Suffix & "|" &
+    ClassNum
+
+RETURN SortKey

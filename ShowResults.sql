@@ -18,13 +18,13 @@ SELECT [ID]
   FROM [HorseShows].[sResults].[ShowResults]
 
   select * from [sResults].[vwResults]
-  WHERE Year IN (2025,2026)
+  --WHERE Year IN (2025,2026)
   --WHERE ShowName='2025 IASPHA FALL HORSE SHOW' AND Year=2025
   --WHERE ClassName LIKE 'WARM UP 2% (SPECIAL HUNTERS ONLY)'
   --WHERE ShowName='UPHA AMERICAN ROYAL NATIONAL CHAMPIONSHIP' AND Year=2025 AND ClassName LIKE '%exceptional%'
   --WHERE Year=2025 AND ShowName in ('ST. LOUIS NATIONAL CHARITY FALL KICK OFF HORSE SHO','MONARCH SERIES CHAMPIONSHIP HORSE SHOW','MISSOURI STATE FAIR','HERE COMES THE BOOM I & II','BRIDLESPUR HORSE SHOW')
   --WHERE Year=2025 AND ShowName in ('UPHA CHAPTER V HORSE SHOW 2025')
-  WHERE HorseName like '%spectra%'
+  --WHERE HorseName like '%spectra%'
   WHERE Trainer='WILCOX, HILARY' OR Trainer LIKE '%RED%WING FARM%'
   --WHERE Rider LIKE '%Wa%lterman%'
   --WHERE Rider LIKE '%Brynlee%'
@@ -59,6 +59,7 @@ SELECT [ID]
   JOIN [HorseShows].[sResults].[Competitors] c ON r.RiderID=c.ID
   JOIN [HorseShows].[sResults].[Competitors] o ON h.OwnerID=o.ID
   JOIN [HorseShows].[sResults].[Competitors] tr ON r.TrainerID=tr.ID
+  WHERE s.ShowGUID='814d5e23-b523-425c-93e4-b065e198e9f3'
   --WHERE tr.Trainer='WILCOX, HILARY'
   ORDER BY CAST(s.StartDate AS DATE) DESC,s.ShowName,CASE WHEN LEN(cl.Class)=1 THEN '000' + cl.Class WHEN LEN(cl.Class)=2 THEN '00' + cl.Class WHEN LEN(cl.Class)=3 THEN '0' + cl.Class ELSE cl.Class END,r.Place
 

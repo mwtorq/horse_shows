@@ -1,6 +1,6 @@
 CREATE OR ALTER VIEW [sResults].[vwResults] AS
 
-  SELECT TOP 2500000 s.[Year]
+  SELECT TOP 10000000 s.[Year]
       ,s.[ShowName]
       ,s.[StartDate]
       ,s.[EndDate]

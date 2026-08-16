@@ -1,4 +1,5 @@
-# Ignore PowerShell files for Python linting
+﻿# Ignore PowerShell files for Python linting
 *.ps1
 
-
+# Except the scheduled-run wrapper, which needs to stay editable
+!automation/*.ps1

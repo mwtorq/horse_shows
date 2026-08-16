@@ -8,8 +8,8 @@ SELECT [ID]
       ,[CreatedDate]
       ,[UpdatedDate]
   FROM [HorseShows].[sResults].[Competitors]
-  WHERE RiderUSEFID IS NOT NULL
-  --WHERE Rider IS NOT NULL
+  --WHERE RiderUSEFID IS NOT NULL
+  WHERE Rider IS NOT NULL
   --AND RiderUSEFID IS NULL
   ORDER BY Rider
 
