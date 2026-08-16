@@ -1,0 +1,109 @@
+// ============================================================================
+// ALTERNATIVE APPROACH - Avoid "Sort By Column" Circular Reference
+// ============================================================================
+// If you're getting circular reference errors, use this approach instead
+
+// OPTION 1: Use ClassNumberSort directly in visuals (RECOMMENDED)
+// ============================================================================
+// Don't configure "Sort by Column" at all
+// Instead, use ClassNumberSort in your visual and create a display measure
+
+// 1. Add this calculated column (same as before):
+ClassNumberSort = 
+VAR ClassNum = ShowClass[ClassNumber]
+VAR IsPureNumber = NOT(ISERROR(VALUE(ClassNum)))
+VAR FirstDigitPos = IF(NOT(IsPureNumber), SEARCH("[0-9]", ClassNum, 1, BLANK()), BLANK())
+
+VAR Prefix = IF(NOT(ISBLANK(FirstDigitPos)), LEFT(ClassNum, FirstDigitPos - 1), "")
+VAR NumericPart = 
+    IF(IsPureNumber, VALUE(ClassNum),
+        IF(NOT(ISBLANK(FirstDigitPos)),
+            VAR AfterFirstDigit = MID(ClassNum, FirstDigitPos, LEN(ClassNum))
+            VAR FirstNonNumericPos = SEARCH("[^0-9.]", AfterFirstDigit, 1, BLANK())
+            VAR NumString = IF(ISBLANK(FirstNonNumericPos), AfterFirstDigit, LEFT(AfterFirstDigit, FirstNonNumericPos - 1))
+            RETURN VALUE(NumString),
+            BLANK()
+        )
+    )
+
+VAR Suffix = 
+    IF(NOT(IsPureNumber) && NOT(ISBLANK(FirstDigitPos)),
+        VAR AfterFirstDigit = MID(ClassNum, FirstDigitPos, LEN(ClassNum))
+        VAR FirstNonNumericPos = SEARCH("[^0-9.]", AfterFirstDigit, 1, BLANK())
+        RETURN IF(NOT(ISBLANK(FirstNonNumericPos)), MID(AfterFirstDigit, FirstNonNumericPos, 999), ""),
+        ""
+    )
+
+VAR CategoryType = IF(IsPureNumber, 0, IF(NOT(ISBLANK(FirstDigitPos)), 1, 2))
+
+RETURN 
+    FORMAT(CategoryType, "0") & "|" &
+    IF(NOT(ISBLANK(NumericPart)), FORMAT(NumericPart, "0000000000.00"), "0000000000.00") & "|" &
+    Prefix & "|" &
+    Suffix & "|" &
+    ClassNum
+
+// 2. Add this measure for display:
+ClassNumber Display = 
+VAR ClassNum = SELECTEDVALUE(ShowClass[ClassNumber], "All Classes")
+RETURN ClassNum
+
+// 3. In your visuals:
+//    - Axis/Legend: Use ClassNumberSort column (sorts correctly by default)
+//    - Data Labels: Use "ClassNumber Display" measure
+//    - Tooltips: Use "ClassNumber Display" measure
+//    Result: Proper sorting with original class numbers displayed
+
+
+// OPTION 2: Numeric-only sort key measure
+// ============================================================================
+// If you only care about numeric sorting (ignore prefix/suffix complexity)
+
+ClassNumber Sort Key = 
+VAR ClassNum = SELECTEDVALUE(ShowClass[ClassNumber])
+VAR IsPureNumber = NOT(ISERROR(VALUE(ClassNum)))
+
+RETURN 
+    IF(IsPureNumber, 
+        VALUE(ClassNum),
+        999999  // Non-numeric classes go to end
+    )
+
+// Usage: Put ClassNumber Sort Key on axis, ClassNumber Display for labels
+
+
+// OPTION 3: Two separate columns approach
+// ============================================================================
+// Create two completely independent columns
+
+// Column 1: Keep original ClassNumber (no sorting configured)
+// Column 2: ClassNumberSortable (calculated column)
+
+ClassNumberSortable = 
+VAR ClassNum = ShowClass[ClassNumber]
+VAR IsPureNumber = NOT(ISERROR(VALUE(ClassNum)))
+
+RETURN 
+    IF(IsPureNumber,
+        "0_" & FORMAT(VALUE(ClassNum), "0000000000.00"),
+        "1_" & ClassNum
+    )
+
+// Then in visuals:
+//    - Don't use ClassNumber at all
+//    - Use ClassNumberSortable for axis (it will sort correctly)
+//    - Use conditional formatting or measures to hide the "0_" prefix in display
+
+
+// SUMMARY - How to avoid circular reference:
+// ============================================================================
+// The circular reference happens when you try to make a column sort by 
+// another column that references it.
+
+// SOLUTION: Don't use "Sort By Column" feature at all!
+// Instead:
+//   1. Put the SORT column on your axis/legend (ClassNumberSort)
+//   2. Use a MEASURE for display values (ClassNumber Display)
+//   3. Power BI visuals will show the measure value but sort by the column
+
+// This is actually MORE flexible because you can control display independently!

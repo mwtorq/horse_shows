@@ -1200,7 +1200,7 @@ def get_incomplete_classes_for_show(conn, show_list_id, skip_processed=True):
         print_with_timestamp(f"[WARNING] Error getting incomplete classes for ShowListID {show_list_id}: {e}")
         return None
 
-def get_show_data_from_database(conn, skip_processed=True, start_from_show_guid=None, single_show_guid=None):
+def get_show_data_from_database(conn, skip_processed=True, start_from_show_guid=None, single_show_guid=None, year=None, skip_date_check=False, month=None):
     """Get ID, ShowGUID, Year, and ShowName from ShowList table where EndDate < today, ordered by ID
     
     Args:
@@ -1208,6 +1208,9 @@ def get_show_data_from_database(conn, skip_processed=True, start_from_show_guid=
         skip_processed: If True, skip shows that already have ShowClass or ShowResults data
         start_from_show_guid: Optional ShowGUID to start from (only processes ShowListID >= that ShowGUID's ID)
         single_show_guid: Optional ShowGUID to load only that specific show
+        year: Optional year to filter shows (e.g., 2024)
+        skip_date_check: If True, skip the StartDate/EndDate checks (useful for shows with missing dates)
+        month: Optional StartDate month (1-12) to narrow a backfill into a smaller chunk
     """
     try:
         cursor = conn.cursor()
@@ -1243,71 +1246,146 @@ def get_show_data_from_database(conn, skip_processed=True, start_from_show_guid=
             else:
                 print_with_timestamp(f"[WARNING] ShowGUID {start_from_show_guid} not found, ignoring --start-from parameter")
         
+        # Build date filter clause (conditionally)
+        date_filter = ""
+        if not skip_date_check:
+            date_filter = """
+                        AND sl.StartDate IS NOT NULL
+                        AND CAST(sl.EndDate AS DATE) < CAST(GETDATE() AS DATE)"""
+        if month:
+            date_filter += f"""
+                        AND MONTH(sl.StartDate) = {int(month)}"""
+        
+        # Always exclude invalid shows
+        invalid_show_filter = """
+                        AND (sl.ShowName NOT LIKE '%(INVALID SHOW%' OR sl.ShowName IS NULL)"""
+        
         if skip_processed:
             # Get shows that don't have existing ShowClass or ShowResults data
             if start_from_id:
-                cursor.execute("""
-                    SELECT sl.ID, sl.ShowGUID, sl.Year, sl.ShowName 
-                    FROM sResults.ShowList sl
-                    WHERE sl.ShowGUID IS NOT NULL AND sl.ShowGUID != ''
-                    AND sl.StartDate IS NOT NULL
-                    AND CAST(sl.EndDate AS DATE) < CAST(GETDATE() AS DATE)
-                    AND sl.ID >= ?
-                    AND NOT EXISTS (
-                        SELECT 1 FROM sResults.ShowClass sc 
-                        WHERE sc.ShowListID = sl.ID
-                    )
-                    AND NOT EXISTS (
-                        SELECT 1 FROM sResults.ShowResults sr
-                        INNER JOIN sResults.ShowClass sc2 ON sr.ShowClassID = sc2.ID
-                        WHERE sc2.ShowListID = sl.ID
-                    )
-                    ORDER BY sl.ID
-                """, start_from_id)
+                if year:
+                    cursor.execute(f"""
+                        SELECT sl.ID, sl.ShowGUID, sl.Year, sl.ShowName 
+                        FROM sResults.ShowList sl
+                        WHERE sl.ShowGUID IS NOT NULL AND sl.ShowGUID != ''{date_filter}{invalid_show_filter}
+                        AND sl.Year = ?
+                        AND sl.ID >= ?
+                        AND NOT EXISTS (
+                            SELECT 1 FROM sResults.ShowClass sc 
+                            WHERE sc.ShowListID = sl.ID
+                        )
+                        AND NOT EXISTS (
+                            SELECT 1 FROM sResults.ShowResults sr
+                            INNER JOIN sResults.ShowClass sc2 ON sr.ShowClassID = sc2.ID
+                            WHERE sc2.ShowListID = sl.ID
+                        )
+                        ORDER BY sl.ID
+                    """, year, start_from_id)
+                else:
+                    cursor.execute(f"""
+                        SELECT sl.ID, sl.ShowGUID, sl.Year, sl.ShowName 
+                        FROM sResults.ShowList sl
+                        WHERE sl.ShowGUID IS NOT NULL AND sl.ShowGUID != ''{date_filter}{invalid_show_filter}
+                        AND sl.ID >= ?
+                        AND NOT EXISTS (
+                            SELECT 1 FROM sResults.ShowClass sc 
+                            WHERE sc.ShowListID = sl.ID
+                        )
+                        AND NOT EXISTS (
+                            SELECT 1 FROM sResults.ShowResults sr
+                            INNER JOIN sResults.ShowClass sc2 ON sr.ShowClassID = sc2.ID
+                            WHERE sc2.ShowListID = sl.ID
+                        )
+                        ORDER BY sl.ID
+                    """, start_from_id)
             else:
-                cursor.execute("""
-                    SELECT sl.ID, sl.ShowGUID, sl.Year, sl.ShowName 
-                    FROM sResults.ShowList sl
-                    WHERE sl.ShowGUID IS NOT NULL AND sl.ShowGUID != ''
-                    AND sl.StartDate IS NOT NULL
-                    AND CAST(sl.EndDate AS DATE) < CAST(GETDATE() AS DATE)
-                    AND NOT EXISTS (
-                        SELECT 1 FROM sResults.ShowClass sc 
-                        WHERE sc.ShowListID = sl.ID
-                    )
-                    AND NOT EXISTS (
-                        SELECT 1 FROM sResults.ShowResults sr
-                        INNER JOIN sResults.ShowClass sc2 ON sr.ShowClassID = sc2.ID
-                        WHERE sc2.ShowListID = sl.ID
-                    )
-                    ORDER BY sl.ID
-                """)
+                if year:
+                    cursor.execute(f"""
+                        SELECT sl.ID, sl.ShowGUID, sl.Year, sl.ShowName 
+                        FROM sResults.ShowList sl
+                        WHERE sl.ShowGUID IS NOT NULL AND sl.ShowGUID != ''{date_filter}{invalid_show_filter}
+                        AND sl.Year = ?
+                        AND NOT EXISTS (
+                            SELECT 1 FROM sResults.ShowClass sc 
+                            WHERE sc.ShowListID = sl.ID
+                        )
+                        AND NOT EXISTS (
+                            SELECT 1 FROM sResults.ShowResults sr
+                            INNER JOIN sResults.ShowClass sc2 ON sr.ShowClassID = sc2.ID
+                            WHERE sc2.ShowListID = sl.ID
+                        )
+                        ORDER BY sl.ID
+                    """, year)
+                else:
+                    cursor.execute(f"""
+                        SELECT sl.ID, sl.ShowGUID, sl.Year, sl.ShowName 
+                        FROM sResults.ShowList sl
+                        WHERE sl.ShowGUID IS NOT NULL AND sl.ShowGUID != ''{date_filter}{invalid_show_filter}
+                        AND NOT EXISTS (
+                            SELECT 1 FROM sResults.ShowClass sc 
+                            WHERE sc.ShowListID = sl.ID
+                        )
+                        AND NOT EXISTS (
+                            SELECT 1 FROM sResults.ShowResults sr
+                            INNER JOIN sResults.ShowClass sc2 ON sr.ShowClassID = sc2.ID
+                            WHERE sc2.ShowListID = sl.ID
+                        )
+                        ORDER BY sl.ID
+                    """)
             print_with_timestamp("[OK] Filtering out shows with existing ShowClass or ShowResults data")
         else:
             # Get all shows regardless of existing data
+            # Build date filter clause (conditionally)
+            date_filter_simple = ""
+            if not skip_date_check:
+                date_filter_simple = """
+                        AND StartDate IS NOT NULL
+                        AND CAST(EndDate AS DATE) < CAST(GETDATE() AS DATE)"""
+            if month:
+                date_filter_simple += f"""
+                        AND MONTH(StartDate) = {int(month)}"""
+            
             if start_from_id:
-                cursor.execute("""
-                    SELECT ID, ShowGUID, Year, ShowName 
-                    FROM sResults.ShowList 
-                    WHERE ShowGUID IS NOT NULL AND ShowGUID != ''
-                    AND StartDate IS NOT NULL
-                    AND CAST(EndDate AS DATE) < CAST(GETDATE() AS DATE)
-                    AND ID >= ?
-                    ORDER BY ID
-                """, start_from_id)
+                if year:
+                    cursor.execute(f"""
+                        SELECT ID, ShowGUID, Year, ShowName 
+                        FROM sResults.ShowList 
+                        WHERE ShowGUID IS NOT NULL AND ShowGUID != ''{date_filter_simple}{invalid_show_filter}
+                        AND Year = ?
+                        AND ID >= ?
+                        ORDER BY ID
+                    """, year, start_from_id)
+                else:
+                    cursor.execute(f"""
+                        SELECT ID, ShowGUID, Year, ShowName 
+                        FROM sResults.ShowList 
+                        WHERE ShowGUID IS NOT NULL AND ShowGUID != ''{date_filter_simple}{invalid_show_filter}
+                        AND ID >= ?
+                        ORDER BY ID
+                    """, start_from_id)
             else:
-                cursor.execute("""
-                    SELECT ID, ShowGUID, Year, ShowName 
-                    FROM sResults.ShowList 
-                    WHERE ShowGUID IS NOT NULL AND ShowGUID != ''
-                    AND StartDate IS NOT NULL
-                    AND CAST(EndDate AS DATE) < CAST(GETDATE() AS DATE)
-                    ORDER BY ID
-                """)
+                if year:
+                    cursor.execute(f"""
+                        SELECT ID, ShowGUID, Year, ShowName 
+                        FROM sResults.ShowList 
+                        WHERE ShowGUID IS NOT NULL AND ShowGUID != ''{date_filter_simple}{invalid_show_filter}
+                        AND Year = ?
+                        ORDER BY ID
+                    """, year)
+                else:
+                    cursor.execute(f"""
+                        SELECT ID, ShowGUID, Year, ShowName 
+                        FROM sResults.ShowList 
+                        WHERE ShowGUID IS NOT NULL AND ShowGUID != ''{date_filter_simple}{invalid_show_filter}
+                        ORDER BY ID
+                    """)
         
         show_data = [(row[0], row[1], row[2], row[3]) for row in cursor.fetchall()]
         cursor.close()
-        print_with_timestamp(f"[OK] Found {len(show_data)} shows with EndDate < today")
+        if skip_date_check:
+            print_with_timestamp(f"[OK] Found {len(show_data)} shows (date check skipped)")
+        else:
+            print_with_timestamp(f"[OK] Found {len(show_data)} shows with EndDate < today")
         return show_data
     except Exception as e:
         print_with_timestamp(f"[ERROR] Error getting show data from database: {e}")
@@ -1315,13 +1393,15 @@ def get_show_data_from_database(conn, skip_processed=True, start_from_show_guid=
         traceback.print_exc()
         return []
 
-def get_shows_with_missing_classes(conn, start_from_show_guid=None, single_show_guid=None):
+def get_shows_with_missing_classes(conn, start_from_show_guid=None, single_show_guid=None, year=None, month=None):
     """Get shows that have ShowClass rows with Placings > 0 that don't have corresponding ShowResults
     
     Args:
         conn: Database connection
         start_from_show_guid: Optional ShowGUID to start from (only processes ShowListID >= that ShowGUID's ID)
         single_show_guid: Optional ShowGUID to load only that specific show
+        year: Optional year to filter shows (e.g., 2024)
+        month: Optional StartDate month (1-12) to narrow the sweep into a smaller chunk
     
     Returns: List of tuples (show_list_id, show_guid, year, show_name, list of ShowClass IDs to process)
     """
@@ -1485,9 +1565,19 @@ def get_shows_with_missing_classes(conn, start_from_show_guid=None, single_show_
             else:
                 print_with_timestamp(f"[WARNING] ShowGUID {start_from_show_guid} not found, ignoring --start-from parameter")
         
+        # Year/month are interpolated rather than bound because they are validated ints and
+        # the surrounding queries already build their WHERE clause by string composition.
+        period_filter = ""
+        if year:
+            period_filter += f"""
+                AND sl.Year = {int(year)}"""
+        if month:
+            period_filter += f"""
+                AND MONTH(sl.StartDate) = {int(month)}"""
+
         # Find shows that have ShowClass rows with Placings > 0 that don't have ShowResults
         if start_from_id:
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT DISTINCT
                     sl.ID,
                     sl.ShowGUID,
@@ -1496,7 +1586,7 @@ def get_shows_with_missing_classes(conn, start_from_show_guid=None, single_show_
                 FROM sResults.ShowList sl
                 WHERE sl.ShowGUID IS NOT NULL AND sl.ShowGUID != ''
                 AND sl.StartDate IS NOT NULL
-                AND CAST(sl.EndDate AS DATE) < CAST(GETDATE() AS DATE)
+                AND CAST(sl.EndDate AS DATE) < CAST(GETDATE() AS DATE){period_filter}
                 AND sl.ID >= ?
                 -- Has ShowClass rows that need processing (missing placing results OR missing non-placing entries)
                 AND EXISTS (
@@ -1529,7 +1619,7 @@ def get_shows_with_missing_classes(conn, start_from_show_guid=None, single_show_
                 ORDER BY sl.ID
             """, start_from_id)
         else:
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT DISTINCT
                     sl.ID,
                     sl.ShowGUID,
@@ -1538,7 +1628,7 @@ def get_shows_with_missing_classes(conn, start_from_show_guid=None, single_show_
                 FROM sResults.ShowList sl
                 WHERE sl.ShowGUID IS NOT NULL AND sl.ShowGUID != ''
                 AND sl.StartDate IS NOT NULL
-                AND CAST(sl.EndDate AS DATE) < CAST(GETDATE() AS DATE)
+                AND CAST(sl.EndDate AS DATE) < CAST(GETDATE() AS DATE){period_filter}
                 -- Has ShowClass rows that need processing (missing placing results OR missing non-placing entries)
                 AND EXISTS (
                     SELECT 1
@@ -2562,7 +2652,209 @@ def find_and_click_show_row(driver, show_guid, year, show_name, sleep_medium=1):
         time.sleep(sleep_medium)  # Fallback wait
     return True
 
-def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_name, conn, show_class_ids=None, sleep_short=0.3, sleep_medium=0.5, sleep_long=1):
+def extract_show_details_from_page(driver, show_guid):
+    """Extract show metadata from ShowDetails page
+    
+    Returns dict with: ShowName, StartDate, EndDate, ShowDate, ShowLocation, StateProv, GoverningBody
+    Returns None if extraction fails
+    """
+    try:
+        import re
+        from bs4 import BeautifulSoup
+        
+        # Get page source and parse with BeautifulSoup
+        page_source = driver.page_source
+        soup = BeautifulSoup(page_source, 'html.parser')
+        
+        show_details = {}
+        
+        # Extract Show Name - typically in a heading or title area
+        # Look for common patterns in horseshowsonline.com
+        show_name = None
+        
+        # Try finding in page title first
+        title_elem = soup.find('title')
+        if title_elem and title_elem.text:
+            # Title format is usually "SHOW NAME- HorseShowsOnline"
+            title_text = title_elem.text.strip()
+            if '-' in title_text:
+                show_name = title_text.split('-')[0].strip()
+        
+        # Try finding in main content area
+        if not show_name:
+            # Look for heading tags or divs with show name
+            for tag in soup.find_all(['h1', 'h2', 'h3', 'span', 'div']):
+                if tag.get('class') and any('title' in c.lower() or 'heading' in c.lower() or 'name' in c.lower() for c in tag.get('class', [])):
+                    text = tag.get_text(strip=True)
+                    if len(text) > 5 and len(text) < 150:  # Reasonable show name length
+                        show_name = text
+                        break
+        
+        # Check if show name indicates invalid/deleted show
+        if show_name and ('no show has been selected' in show_name.lower() or 
+                          'show not found' in show_name.lower()):
+            show_name = None  # Don't save invalid show names
+        
+        show_details['ShowName'] = show_name
+        
+        # Extract dates and location - look for patterns in table cells or labels
+        # Common patterns: "Show Dates:", "Location:", "State:", "Governing Organization:"
+        
+        # Try to find labeled data
+        labels = soup.find_all(['td', 'th', 'div', 'span', 'label'])
+        
+        for i, elem in enumerate(labels):
+            text = elem.get_text(strip=True)
+            
+            # Look for date information
+            if 'show date' in text.lower() or text.lower() == 'dates:':
+                # Next element might have the date value
+                next_elem = labels[i+1] if i+1 < len(labels) else None
+                if next_elem:
+                    date_text = next_elem.get_text(strip=True)
+                    show_details['ShowDate'] = date_text
+                    
+                    # Try to extract start and end dates
+                    # Format: "May 10, 2014" or "Jun 16, 2014 - Jun 21, 2014"
+                    date_match = re.search(r'([A-Z][a-z]{2}\s+\d{1,2},\s+\d{4})\s*-\s*([A-Z][a-z]{2}\s+\d{1,2},\s+\d{4})', date_text)
+                    if date_match:
+                        show_details['StartDate'] = date_match.group(1)
+                        show_details['EndDate'] = date_match.group(2)
+                    else:
+                        # Single date show
+                        single_date_match = re.search(r'([A-Z][a-z]{2}\s+\d{1,2},\s+\d{4})', date_text)
+                        if single_date_match:
+                            show_details['StartDate'] = single_date_match.group(1)
+                            show_details['EndDate'] = single_date_match.group(1)
+            
+            # Look for location
+            elif 'location' in text.lower() or 'venue' in text.lower():
+                next_elem = labels[i+1] if i+1 < len(labels) else None
+                if next_elem:
+                    location_text = next_elem.get_text(strip=True)
+                    show_details['ShowLocation'] = location_text
+                    
+                    # Try to extract state/province from location
+                    # Format: "SALEM, VA" or "Newburgh, NY"
+                    state_match = re.search(r',\s*([A-Z]{2})\s*$', location_text)
+                    if state_match:
+                        show_details['StateProv'] = state_match.group(1)
+            
+            # Look for state explicitly
+            elif 'state' in text.lower() and 'province' not in text.lower():
+                next_elem = labels[i+1] if i+1 < len(labels) else None
+                if next_elem:
+                    state_text = next_elem.get_text(strip=True)
+                    if len(state_text) == 2:  # State abbreviation
+                        show_details['StateProv'] = state_text
+            
+            # Look for governing body/organization
+            elif 'governing' in text.lower() or 'organization' in text.lower():
+                next_elem = labels[i+1] if i+1 < len(labels) else None
+                if next_elem:
+                    gov_text = next_elem.get_text(strip=True)
+                    show_details['GoverningBody'] = gov_text
+        
+        return show_details if show_details else None
+        
+    except Exception as e:
+        print_with_timestamp(f"    [WARNING] Error extracting show details: {e}")
+        return None
+
+
+def update_show_details_in_database(conn, show_list_id, show_details):
+    """Update show details in database if they are missing
+    
+    Args:
+        conn: Database connection
+        show_list_id: ShowListID to update
+        show_details: Dict with show metadata (ShowName, StartDate, EndDate, ShowDate, ShowLocation, StateProv, GoverningBody)
+    
+    Returns:
+        True if updated, False if not updated
+    """
+    try:
+        cursor = conn.cursor()
+        
+        # Check what's missing in the database
+        cursor.execute("""
+            SELECT ShowName, StartDate, EndDate, ShowDate, ShowLocation, StateProv, GoverningBody
+            FROM sResults.ShowList
+            WHERE ID = ?
+        """, show_list_id)
+        
+        row = cursor.fetchone()
+        if not row:
+            return False
+        
+        db_show_name, db_start_date, db_end_date, db_show_date, db_location, db_state, db_gov_body = row
+        
+        # Determine what needs updating
+        updates = []
+        params = []
+        
+        # Check and add ShowName if missing or placeholder
+        # Skip if current name indicates invalid show
+        if '(INVALID SHOW' in str(db_show_name):
+            # Don't update invalid shows
+            pass
+        elif show_details.get('ShowName') and (not db_show_name or 'Archive' in str(db_show_name) or len(str(db_show_name)) < 10):
+            updates.append("ShowName = ?")
+            params.append(show_details['ShowName'])
+        
+        # Check and add StartDate if missing
+        if show_details.get('StartDate') and not db_start_date:
+            updates.append("StartDate = ?")
+            params.append(show_details['StartDate'])
+        
+        # Check and add EndDate if missing
+        if show_details.get('EndDate') and not db_end_date:
+            updates.append("EndDate = ?")
+            params.append(show_details['EndDate'])
+        
+        # Check and add ShowDate if missing or just year
+        if show_details.get('ShowDate') and (not db_show_date or len(str(db_show_date)) <= 4):
+            updates.append("ShowDate = ?")
+            params.append(show_details['ShowDate'])
+        
+        # Check and add ShowLocation if missing
+        if show_details.get('ShowLocation') and not db_location:
+            updates.append("ShowLocation = ?")
+            params.append(show_details['ShowLocation'])
+        
+        # Check and add StateProv if missing
+        if show_details.get('StateProv') and not db_state:
+            updates.append("StateProv = ?")
+            params.append(show_details['StateProv'])
+        
+        # Check and add GoverningBody if missing
+        if show_details.get('GoverningBody') and not db_gov_body:
+            updates.append("GoverningBody = ?")
+            params.append(show_details['GoverningBody'])
+        
+        # Execute update if there are changes
+        if updates:
+            params.append(show_list_id)
+            update_sql = f"""
+                UPDATE sResults.ShowList
+                SET {', '.join(updates)}
+                WHERE ID = ?
+            """
+            cursor.execute(update_sql, params)
+            conn.commit()
+            
+            print_with_timestamp(f"    [OK] Updated {len(updates)} show detail(s) in database")
+            return True
+        else:
+            print_with_timestamp(f"    [INFO] Show details already complete in database")
+            return False
+            
+    except Exception as e:
+        print_with_timestamp(f"    [ERROR] Failed to update show details: {e}")
+        return False
+
+
+def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_name, conn, show_class_ids=None, use_direct_url=False, sleep_short=0.3, sleep_medium=0.5, sleep_long=1):
     """Scrape class results for a single show
     
     Args:
@@ -2573,6 +2865,7 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
         show_name: Show name string
         conn: Database connection
         show_class_ids: Optional list of ShowClass IDs to process. If None, processes all classes.
+        use_direct_url: If True, navigate directly to ShowDetails URL instead of using grid (default: False)
         sleep_short: Short sleep duration in seconds (default: 0.5)
         sleep_medium: Medium sleep duration in seconds (default: 1)
         sleep_long: Long sleep duration in seconds (default: 3)
@@ -2602,55 +2895,95 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                 print_with_timestamp(f"  [ERROR] Failed to reconnect browser, aborting show")
                 return 0, driver
         
-        # Navigate to ShowSelector page first (optimized)
-        show_selector_url = 'https://horseshowsonline.com/ShowSelector.aspx'
-        try:
-            current_url = driver.current_url
-            if 'ShowSelector' not in current_url:
-                print_with_timestamp("  Navigating to ShowSelector page...")
-                driver.get(show_selector_url)
-                # Wait for page to load minimally
-                try:
-                    WebDriverWait(driver, 5).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, "li.dxtc-tab, table[id*='grMaster']"))
-                    )
-                except:
-                    time.sleep(sleep_medium)  # Fallback minimal wait
-                log_import_activity(conn, 'scrape_class_results.py', action='NAVIGATE', 
-                                  additional_info=f'Navigated to ShowSelector page for ShowGUID: {show_guid}')
-        except Exception as e:
-            print_with_timestamp(f"  [WARNING] Error checking/accessing current URL: {e}, attempting reconnection...")
-            new_driver = reconnect_browser_and_navigate(driver, show_guid, year, show_name)
-            if new_driver:
-                driver = new_driver
-                # Try navigation again
-                try:
-                    driver.get(show_selector_url)
-                    WebDriverWait(driver, 5).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, "li.dxtc-tab, table[id*='grMaster']"))
-                    )
-                except:
-                    time.sleep(sleep_medium)
-            else:
-                print_with_timestamp(f"  [ERROR] Failed to reconnect browser, aborting show")
-                return 0, driver
-        
-        # Activate Shows By Year tab (optimized - reduced sleeps)
-        if not activate_shows_by_year_tab(driver, sleep_medium=0.5, sleep_short=0.2):
-            print_with_timestamp(f"  [WARNING] Failed to activate 'Shows By Year' tab, trying direct navigation")
-            class_results_url = f'https://horseshowsonline.com/ClassResults?ShowGUID={show_guid}'
-            driver.get(class_results_url)
-            # Wait for grid with WebDriverWait instead of fixed sleep
+        # Navigate to show - use direct URL if requested, otherwise use grid navigation
+        if use_direct_url:
+            # Direct navigation to ShowDetails URL (FASTER)
+            print_with_timestamp(f"  Using direct URL navigation to ShowDetails...")
+            show_details_url = f'https://horseshowsonline.com/ShowDetails?ShowGUID={show_guid}'
             try:
-                WebDriverWait(driver, 6).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "table[id*='grMaster'], table.dxgvTable"))
-                )
-            except:
-                time.sleep(sleep_long)  # Fallback wait
-        else:
-            # Select the year (optimized - reduced sleeps)
-            if not select_year(driver, year, sleep_short=0.5, sleep_medium=0.8):
-                print_with_timestamp(f"  [WARNING] Failed to select year {year}, trying direct navigation")
+                driver.get(show_details_url)
+                print_with_timestamp(f"  Navigated to: {show_details_url}")
+                # Wait for page to load - look for ClassResults tab or grid
+                try:
+                    WebDriverWait(driver, 10).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "li.dxtc-tab, table[id*='grMaster'], a[href*='ClassResults']"))
+                    )
+                    time.sleep(sleep_medium)  # Small additional wait for JS to settle
+                except TimeoutException:
+                    print_with_timestamp(f"  [WARNING] Page load timeout, attempting to continue...")
+                    time.sleep(sleep_long)
+                
+                # Extract and update show details if missing
+                print_with_timestamp(f"  Extracting show details from page...")
+                show_details = extract_show_details_from_page(driver, show_guid)
+                if show_details:
+                    # Check if this is an invalid/deleted show
+                    show_name = show_details.get('ShowName', '')
+                    if show_name and ('no show has been selected' in show_name.lower() or 
+                                     'show not found' in show_name.lower()):
+                        print_with_timestamp(f"  [WARNING] Show not found or deleted (ShowGUID: {show_guid})")
+                        print_with_timestamp(f"  Skipping this show...")
+                        log_import_activity(conn, 'scrape_class_results.py', action='SKIP_SHOW', 
+                                          additional_info=f'Show not found/deleted: ShowGUID={show_guid}, ShowName={show_name}')
+                        return 0, driver
+                    
+                    extracted_fields = [k for k, v in show_details.items() if v]
+                    if extracted_fields:
+                        print_with_timestamp(f"    Extracted: {', '.join(extracted_fields)}")
+                        update_show_details_in_database(conn, show_list_id, show_details)
+                    else:
+                        print_with_timestamp(f"    [INFO] No show details extracted from page")
+                
+                # Now navigate to ClassResults
+                class_results_url = f'https://horseshowsonline.com/ClassResults?ShowGUID={show_guid}'
+                print_with_timestamp(f"  Navigating to ClassResults...")
+                driver.get(class_results_url)
+                
+                log_import_activity(conn, 'scrape_class_results.py', action='NAVIGATE', 
+                                  additional_info=f'Direct navigation to ClassResults for ShowGUID: {show_guid}')
+            except Exception as e:
+                print_with_timestamp(f"  [ERROR] Direct URL navigation failed: {e}")
+                print_with_timestamp(f"  Falling back to grid navigation...")
+                use_direct_url = False  # Fall back to grid method
+        
+        if not use_direct_url:
+            # Original grid navigation method
+            # Navigate to ShowSelector page first (optimized)
+            show_selector_url = 'https://horseshowsonline.com/ShowSelector.aspx'
+            try:
+                current_url = driver.current_url
+                if 'ShowSelector' not in current_url:
+                    print_with_timestamp("  Navigating to ShowSelector page...")
+                    driver.get(show_selector_url)
+                    # Wait for page to load minimally
+                    try:
+                        WebDriverWait(driver, 5).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, "li.dxtc-tab, table[id*='grMaster']"))
+                        )
+                    except:
+                        time.sleep(sleep_medium)  # Fallback minimal wait
+                    log_import_activity(conn, 'scrape_class_results.py', action='NAVIGATE', 
+                                      additional_info=f'Navigated to ShowSelector page for ShowGUID: {show_guid}')
+            except Exception as e:
+                print_with_timestamp(f"  [WARNING] Error checking/accessing current URL: {e}, attempting reconnection...")
+                new_driver = reconnect_browser_and_navigate(driver, show_guid, year, show_name)
+                if new_driver:
+                    driver = new_driver
+                    # Try navigation again
+                    try:
+                        driver.get(show_selector_url)
+                        WebDriverWait(driver, 5).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, "li.dxtc-tab, table[id*='grMaster']"))
+                        )
+                    except:
+                        time.sleep(sleep_medium)
+                else:
+                    print_with_timestamp(f"  [ERROR] Failed to reconnect browser, aborting show")
+                    return 0, driver
+            
+            # Activate Shows By Year tab (optimized - reduced sleeps)
+            if not activate_shows_by_year_tab(driver, sleep_medium=0.5, sleep_short=0.2):
+                print_with_timestamp(f"  [WARNING] Failed to activate 'Shows By Year' tab, trying direct navigation")
                 class_results_url = f'https://horseshowsonline.com/ClassResults?ShowGUID={show_guid}'
                 driver.get(class_results_url)
                 # Wait for grid with WebDriverWait instead of fixed sleep
@@ -2661,9 +2994,9 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                 except:
                     time.sleep(sleep_long)  # Fallback wait
             else:
-                # Find and click the show row to navigate to ClassResults (optimized - reduced sleeps)
-                if not find_and_click_show_row(driver, show_guid, year, show_name, sleep_medium=1):
-                    print_with_timestamp(f"  [WARNING] Failed to find show row, trying direct navigation")
+                # Select the year (optimized - reduced sleeps)
+                if not select_year(driver, year, sleep_short=0.5, sleep_medium=0.8):
+                    print_with_timestamp(f"  [WARNING] Failed to select year {year}, trying direct navigation")
                     class_results_url = f'https://horseshowsonline.com/ClassResults?ShowGUID={show_guid}'
                     driver.get(class_results_url)
                     # Wait for grid with WebDriverWait instead of fixed sleep
@@ -2673,6 +3006,19 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                         )
                     except:
                         time.sleep(sleep_long)  # Fallback wait
+                else:
+                    # Find and click the show row to navigate to ClassResults (optimized - reduced sleeps)
+                    if not find_and_click_show_row(driver, show_guid, year, show_name, sleep_medium=1):
+                        print_with_timestamp(f"  [WARNING] Failed to find show row, trying direct navigation")
+                        class_results_url = f'https://horseshowsonline.com/ClassResults?ShowGUID={show_guid}'
+                        driver.get(class_results_url)
+                        # Wait for grid with WebDriverWait instead of fixed sleep
+                        try:
+                            WebDriverWait(driver, 6).until(
+                                EC.presence_of_element_located((By.CSS_SELECTOR, "table[id*='grMaster'], table.dxgvTable"))
+                            )
+                        except:
+                            time.sleep(sleep_long)  # Fallback wait
         
         # Wait for the ClassResults page to load - look for the grid table (optimized)
         try:
@@ -3834,52 +4180,51 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
         # No further processing needed
         
         # STEP 3: Optional cleanup - collapse any remaining expanded rows
-        # (Most rows should already be collapsed, but this is a safety measure)
-        # STEP 3: Collapse all rows at once (optional cleanup)
-        print_with_timestamp(f"  Step 3: Collapsing all expanded rows...")
-        collapsed_count = 0
-        try:
-            # Check if driver session is still valid before collapsing
-            try:
-                _ = driver.current_url  # Test if session is valid
-            except Exception:
-                print_with_timestamp(f"  [WARNING] Driver session invalid before collapse, reconnecting...")
-                new_driver = create_reconnect_func()
-                if new_driver:
-                    driver = new_driver
-                else:
-                    print_with_timestamp(f"  [WARNING] Failed to reconnect, skipping collapse")
-                    return results_count, driver
-            
-            grid = driver.find_element(By.CSS_SELECTOR, 
-                "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
-            rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
-            if not rows:
-                all_rows = grid.find_elements(By.TAG_NAME, "tr")
-                rows = []
-                for r in all_rows:
-                    row_id = r.get_attribute('id') or ''
-                    row_class = r.get_attribute('class') or ''
-                    # Exclude detail rows (containing grPlacing, grNonPlacing, dxdt), header rows, and filter rows
-                    detail_row_indicators = ['grPlacing', 'grNonPlacing', 'dxdt']
-                    is_detail_row = any(indicator in row_id for indicator in detail_row_indicators)
-                    
-                    if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and \
-                       'HeaderRow' not in row_id and 'FilterRow' not in row_id and \
-                       not is_detail_row:
-                        rows.append(r)
-            
-            for row_idx, class_row_id in row_id_map.items():
-                try:
-                    if collapse_row(driver, class_row_id, reconnect_func=create_reconnect_func):
-                        collapsed_count += 1
-                except Exception as e:
-                    print_with_timestamp(f"    [WARNING] Could not collapse row {row_idx}: {e}")
-                    continue
-            
-            print_with_timestamp(f"  [OK] Collapsed {collapsed_count}/{len(row_id_map)} rows")
-        except Exception as e:
-            print_with_timestamp(f"  [WARNING] Error during bulk collapse: {e}")
+        # DISABLED: Keep rows expanded after processing for easier review
+        # print_with_timestamp(f"  Step 3: Collapsing all expanded rows...")
+        # collapsed_count = 0
+        # try:
+        #     # Check if driver session is still valid before collapsing
+        #     try:
+        #         _ = driver.current_url  # Test if session is valid
+        #     except Exception:
+        #         print_with_timestamp(f"  [WARNING] Driver session invalid before collapse, reconnecting...")
+        #         new_driver = create_reconnect_func()
+        #         if new_driver:
+        #             driver = new_driver
+        #         else:
+        #             print_with_timestamp(f"  [WARNING] Failed to reconnect, skipping collapse")
+        #             return results_count, driver
+        #     
+        #     grid = driver.find_element(By.CSS_SELECTOR, 
+        #         "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+        #     rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
+        #     if not rows:
+        #         all_rows = grid.find_elements(By.TAG_NAME, "tr")
+        #         rows = []
+        #         for r in all_rows:
+        #             row_id = r.get_attribute('id') or ''
+        #             row_class = r.get_attribute('class') or ''
+        #             # Exclude detail rows (containing grPlacing, grNonPlacing, dxdt), header rows, and filter rows
+        #             detail_row_indicators = ['grPlacing', 'grNonPlacing', 'dxdt']
+        #             is_detail_row = any(indicator in row_id for indicator in detail_row_indicators)
+        #             
+        #             if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and \
+        #                'HeaderRow' not in row_id and 'FilterRow' not in row_id and \
+        #                not is_detail_row:
+        #                 rows.append(r)
+        #     
+        #     for row_idx, class_row_id in row_id_map.items():
+        #         try:
+        #             if collapse_row(driver, class_row_id, reconnect_func=create_reconnect_func):
+        #                 collapsed_count += 1
+        #         except Exception as e:
+        #             print_with_timestamp(f"    [WARNING] Could not collapse row {row_idx}: {e}")
+        #             continue
+        #     
+        #     print_with_timestamp(f"  [OK] Collapsed {collapsed_count}/{len(row_id_map)} rows")
+        # except Exception as e:
+        #     print_with_timestamp(f"  [WARNING] Error during bulk collapse: {e}")
         
         print_with_timestamp(f"  [OK] Completed scraping for ShowGUID {show_guid}: {results_count} results saved")
         
@@ -3896,7 +4241,7 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
         traceback.print_exc()
         return results_count, driver  # Return driver in case it was reconnected
 
-def main(skip_processed=True, load_missing_classes=False, start_from_show_guid=None, single_show_guid=None, sleep_short=0.5, sleep_medium=1):
+def main(skip_processed=True, load_missing_classes=False, start_from_show_guid=None, single_show_guid=None, year=None, use_direct_url=False, skip_date_check=False, sleep_short=0.5, sleep_medium=1, month=None, list_only=False):
     """Main function to scrape class results
     
     Args:
@@ -3904,8 +4249,13 @@ def main(skip_processed=True, load_missing_classes=False, start_from_show_guid=N
         load_missing_classes: If True, load only classes with Placings > 0 that don't have ShowResults (default: False)
         start_from_show_guid: Optional ShowGUID to start from (only processes ShowListID >= that ShowGUID's ID)
         single_show_guid: Optional ShowGUID to load only that specific show
+        year: Optional year to filter shows (e.g., 2024)
+        use_direct_url: If True, navigate directly to show URLs instead of using grid (default: False)
+        skip_date_check: If True, skip the StartDate/EndDate checks (useful for shows with missing dates) (default: False)
         sleep_short: Short sleep duration in seconds (default: 0.5)
         sleep_medium: Medium sleep duration in seconds (default: 1)
+        month: Optional StartDate month (1-12) to narrow a backfill into a smaller chunk
+        list_only: If True, list the shows that would be processed and return without scraping
     """
     print_with_timestamp("\n" + "=" * 60)
     print_with_timestamp("HorseShowsOnline - Class Results Scraper")
@@ -3918,14 +4268,30 @@ def main(skip_processed=True, load_missing_classes=False, start_from_show_guid=N
     else:
         print_with_timestamp("[INFO] Will process all shows, including those with existing data\n")
     
+    if year:
+        print_with_timestamp(f"[INFO] Filtering shows by year: {year}\n")
+    
+    if month:
+        print_with_timestamp(f"[INFO] Filtering shows by StartDate month: {month}\n")
+    
+    if list_only:
+        print_with_timestamp("[INFO] Dry run: listing matching shows only, nothing will be scraped\n")
+    
+    if use_direct_url:
+        print_with_timestamp(f"[INFO] Using direct URL navigation (faster, bypasses grid)\n")
+    
+    if skip_date_check:
+        print_with_timestamp(f"[INFO] Skipping date checks (will process shows without StartDate/EndDate)\n")
+    
     driver = None
     conn = None
     
     try:
         # Setup driver
-        print_with_timestamp("Initializing browser (headless mode)...")
-        driver = setup_driver(headless=True)
-        print_with_timestamp("  [OK] Browser initialized\n")
+        if not list_only:
+            print_with_timestamp("Initializing browser (headless mode)...")
+            driver = setup_driver(headless=True)
+            print_with_timestamp("  [OK] Browser initialized\n")
         
         # Connect to database
         print_with_timestamp("Connecting to database...")
@@ -3943,34 +4309,46 @@ def main(skip_processed=True, load_missing_classes=False, start_from_show_guid=N
         
         # Log script start
         log_import_activity(conn, 'scrape_class_results.py', action='START', 
-                          additional_info=f'skip_processed={skip_processed}, load_missing_classes={load_missing_classes}, start_from_show_guid={start_from_show_guid}, single_show_guid={single_show_guid}')
+                          additional_info=f'skip_processed={skip_processed}, load_missing_classes={load_missing_classes}, start_from_show_guid={start_from_show_guid}, single_show_guid={single_show_guid}, year={year}')
         
         # Get ShowGUIDs, Years, and ShowNames from database
         if load_missing_classes:
             print_with_timestamp("Fetching shows with missing class results...")
-            show_data_list = get_shows_with_missing_classes(conn, start_from_show_guid=start_from_show_guid, single_show_guid=single_show_guid)
+            show_data_list = get_shows_with_missing_classes(conn, start_from_show_guid=start_from_show_guid, single_show_guid=single_show_guid, year=year, month=month)
             print_with_timestamp(f"[OK] Found {len(show_data_list)} shows with missing classes\n")
             
             if not show_data_list:
                 print_with_timestamp("[WARNING] No shows with missing class results found.")
                 return
             
+            if list_only:
+                for show_list_id, show_guid, show_year, show_name, missing_class_ids in show_data_list:
+                    print_with_timestamp(f"  {show_year}  {show_guid}  {show_name} ({len(missing_class_ids)} classes)")
+                print_with_timestamp(f"\n[OK] Dry run: {len(show_data_list)} shows would be processed, nothing scraped")
+                return
+            
             # Scrape results for each show (with specific class IDs)
             total_results = 0
             for idx, (show_list_id, show_guid, year, show_name, missing_class_ids) in enumerate(show_data_list, 1):
                 print_with_timestamp(f"\nProcessing show {idx}/{len(show_data_list)} ({len(missing_class_ids)} missing classes)...")
-                results_count, driver = scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_name, conn, show_class_ids=missing_class_ids, sleep_short=sleep_short, sleep_medium=sleep_medium)
+                results_count, driver = scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_name, conn, show_class_ids=missing_class_ids, use_direct_url=use_direct_url, sleep_short=sleep_short, sleep_medium=sleep_medium)
                 total_results += results_count
                 
                 # Small delay between shows
                 time.sleep(sleep_medium)
         else:
             print_with_timestamp("Fetching ShowGUIDs, Years, and ShowNames from ShowList table...")
-            show_data_list = get_show_data_from_database(conn, skip_processed=skip_processed, start_from_show_guid=start_from_show_guid, single_show_guid=single_show_guid)
+            show_data_list = get_show_data_from_database(conn, skip_processed=skip_processed, start_from_show_guid=start_from_show_guid, single_show_guid=single_show_guid, year=year, skip_date_check=skip_date_check, month=month)
             print_with_timestamp(f"[OK] Found {len(show_data_list)} shows\n")
             
             if not show_data_list:
                 print_with_timestamp("[WARNING] No ShowGUIDs found in database. Please run scrape_shows_by_year.py first.")
+                return
+            
+            if list_only:
+                for show_list_id, show_guid, show_year, show_name in show_data_list:
+                    print_with_timestamp(f"  {show_year}  {show_guid}  {show_name}")
+                print_with_timestamp(f"\n[OK] Dry run: {len(show_data_list)} shows would be processed, nothing scraped")
                 return
             
             # Scrape results for each show
@@ -4013,7 +4391,8 @@ def main(skip_processed=True, load_missing_classes=False, start_from_show_guid=N
                 # Pass incomplete_class_ids to scrape function to resume from where left off
                 results_count, driver = scrape_class_results_for_show(
                     driver, show_list_id, show_guid, year, show_name, conn, 
-                    show_class_ids=incomplete_class_ids, 
+                    show_class_ids=incomplete_class_ids,
+                    use_direct_url=use_direct_url,
                     sleep_short=sleep_short, sleep_medium=sleep_medium
                 )
                 total_results += results_count
@@ -4090,6 +4469,11 @@ if __name__ == '__main__':
     load_missing_classes = False
     start_from_show_guid = None
     single_show_guid = None
+    year = None
+    use_direct_url = False
+    skip_date_check = False
+    month = None
+    list_only = False
     
     i = 1
     while i < len(sys.argv):
@@ -4118,6 +4502,42 @@ if __name__ == '__main__':
             else:
                 print_with_timestamp("[ERROR] --show-guid requires a ShowGUID value")
                 sys.exit(1)
+        elif arg_lower in ['--year', '-y']:
+            if i + 1 < len(sys.argv):
+                try:
+                    year = int(sys.argv[i + 1])
+                    print_with_timestamp(f"[INFO] Command-line argument detected: Will filter shows by year {year}")
+                    i += 1  # Skip the next argument as it's the year value
+                except ValueError:
+                    print_with_timestamp(f"[ERROR] --year requires a valid year value (got: {sys.argv[i + 1]})")
+                    sys.exit(1)
+            else:
+                print_with_timestamp("[ERROR] --year requires a year value (e.g., 2024)")
+                sys.exit(1)
+        elif arg_lower in ['--month']:
+            if i + 1 < len(sys.argv):
+                try:
+                    month = int(sys.argv[i + 1])
+                except ValueError:
+                    print_with_timestamp(f"[ERROR] --month requires a number 1-12 (got: {sys.argv[i + 1]})")
+                    sys.exit(1)
+                if not 1 <= month <= 12:
+                    print_with_timestamp(f"[ERROR] --month must be between 1 and 12 (got: {month})")
+                    sys.exit(1)
+                print_with_timestamp(f"[INFO] Command-line argument detected: Will filter shows by StartDate month {month}")
+                i += 1  # Skip the next argument as it's the month value
+            else:
+                print_with_timestamp("[ERROR] --month requires a month value (e.g., 4)")
+                sys.exit(1)
+        elif arg_lower in ['--list-only', '--dry-run']:
+            list_only = True
+            print_with_timestamp("[INFO] Command-line argument detected: Will list matching shows and exit without scraping")
+        elif arg_lower in ['--direct-url', '--direct', '-d']:
+            use_direct_url = True
+            print_with_timestamp("[INFO] Command-line argument detected: Will use direct URL navigation (faster)")
+        elif arg_lower in ['--skip-date-check', '--no-date-check', '-n']:
+            skip_date_check = True
+            print_with_timestamp("[INFO] Command-line argument detected: Will skip date checks (process shows without StartDate/EndDate)")
         elif arg_lower in ['--help', '-h']:
             print_with_timestamp("Usage: python scrape_class_results.py [OPTIONS]")
             print_with_timestamp("Options:")
@@ -4125,6 +4545,11 @@ if __name__ == '__main__':
             print_with_timestamp("  --load-missing, -m, --missing: Load only missing class results (classes with Placings > 0 that don't have ShowResults)")
             print_with_timestamp("  --start-from SHOWGUID, -s SHOWGUID: Start processing from the specified ShowGUID (only processes ShowListID >= that ShowGUID's ID)")
             print_with_timestamp("  --show-guid SHOWGUID, --single-show SHOWGUID, -g SHOWGUID: Load only the specified show by ShowGUID")
+            print_with_timestamp("  --year YEAR, -y YEAR: Filter shows by year (e.g., 2024)")
+            print_with_timestamp("  --month MONTH: Filter shows by StartDate month 1-12, for splitting a backfill into chunks")
+            print_with_timestamp("  --list-only, --dry-run: List the shows that would be processed, then exit without scraping")
+            print_with_timestamp("  --direct-url, --direct, -d: Use direct URL navigation instead of grid (faster, recommended)")
+            print_with_timestamp("  --skip-date-check, --no-date-check, -n: Skip StartDate/EndDate checks (process shows even if dates missing)")
             print_with_timestamp("  Default: Skip shows with existing data")
             sys.exit(0)
         
@@ -4139,5 +4564,5 @@ if __name__ == '__main__':
     if load_missing_classes:
         skip_processed = False
     
-    main(skip_processed=skip_processed, load_missing_classes=load_missing_classes, start_from_show_guid=start_from_show_guid, single_show_guid=single_show_guid, sleep_short=0.5, sleep_medium=1)
+    main(skip_processed=skip_processed, load_missing_classes=load_missing_classes, start_from_show_guid=start_from_show_guid, single_show_guid=single_show_guid, year=year, use_direct_url=use_direct_url, skip_date_check=skip_date_check, sleep_short=0.5, sleep_medium=1, month=month, list_only=list_only)
 

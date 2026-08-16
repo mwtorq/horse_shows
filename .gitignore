@@ -1,5 +1,7 @@
 __pycache__/**
-__pycache__/scrape_class_results.cpython-314.pyc
-__pycache__/scrape_class_nonplacing_results.cpython-314.pyc
-__pycache__/scrape_class_results.cpython-314.pyc
-__pycache__/scrape_class_nonplacing_results.cpython-314.pyc
+
+# Power BI writes local state next to the project. cache.abf alone is 345 MB,
+# past GitHub's 100 MB blob limit, and none of it is source.
+**/.pbi/cache.abf
+**/.pbi/localSettings.json
+**/.pbi/editorSettings.json

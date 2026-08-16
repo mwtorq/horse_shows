@@ -1,0 +1,68 @@
+// ============================================================================
+// SIMPLIFIED CLASS NUMBER SORT - Calculated Column
+// ============================================================================
+// Add this as a calculated column to your ShowClass table
+// Then set ClassNumber to "Sort by Column" = ClassNumberSort_Simple
+
+ClassNumberSort_Simple = 
+VAR ClassNum = ShowClass[ClassNumber]
+
+// Check if it's a pure number
+VAR IsPureNumber = NOT(ISERROR(VALUE(ClassNum)))
+
+// If pure number, return it with category 0 prefix
+// If not, create a sortable string with category prefix
+RETURN
+    IF(IsPureNumber,
+        // Category 0: Pure numbers - sort numerically with padding
+        "0|" & FORMAT(VALUE(ClassNum), "0000000000.00"),
+        
+        // Category 1 or 2: Contains letters or mixed content
+        // Extract first number if exists
+        VAR FirstDigitPos = SEARCH("[0-9]", ClassNum, 1, BLANK())
+        VAR HasNumber = NOT(ISBLANK(FirstDigitPos))
+        
+        RETURN
+            IF(HasNumber,
+                // Category 1: Has a number somewhere
+                VAR Prefix = LEFT(ClassNum, FirstDigitPos - 1)
+                VAR Remainder = MID(ClassNum, FirstDigitPos, 999)
+                
+                // Try to extract numeric part
+                VAR NumericPart = 
+                    VAR FirstNonDigit = SEARCH("[^0-9.]", Remainder, 1, BLANK())
+                    VAR NumString = IF(ISBLANK(FirstNonDigit), Remainder, LEFT(Remainder, FirstNonDigit - 1))
+                    RETURN VALUE(NumString)
+                
+                VAR Suffix = 
+                    VAR FirstNonDigit = SEARCH("[^0-9.]", Remainder, 1, BLANK())
+                    RETURN IF(ISBLANK(FirstNonDigit), "", MID(Remainder, FirstNonDigit, 999))
+                
+                RETURN 
+                    "1|" & 
+                    Prefix & "|" & 
+                    FORMAT(NumericPart, "0000000000.00") & "|" & 
+                    Suffix,
+                
+                // Category 2: Pure text, no numbers
+                "2|" & ClassNum
+            )
+    )
+
+
+// ============================================================================
+// ALTERNATIVE: Ultra-Simple Version (Less Accurate but Easier)
+// ============================================================================
+// This version is simpler but may not handle all edge cases perfectly
+
+ClassNumberSort_UltraSimple = 
+VAR ClassNum = ShowClass[ClassNumber]
+VAR NumericValue = VALUE(ClassNum)
+
+RETURN
+    IF(ISERROR(NumericValue),
+        // Not a pure number - use original string with high sort prefix
+        "ZZZ|" & ClassNum,
+        // Pure number - format with padding for numeric sort
+        "000|" & FORMAT(NumericValue, "0000000000.00")
+    )
