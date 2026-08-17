@@ -28,10 +28,10 @@ param(
     # Years for the database-driven sweeps. Cheap, so widening this is low risk.
     [string]$Years,
 
-    # Years for the show-list walk. Deliberately separate and defaulted to the current
-    # year: scrape_shows_by_year.py clicks into every show of a year and reselects the
-    # year picker each time, so a completed prior year costs hours and finds nothing.
-    # Widen this only to backfill a year whose shows were never discovered.
+    # Years for the show-list walk. Kept separate from $Years and defaulted to the current
+    # year. scrape_shows_by_year.py now reads each row's ShowGUID from the grid and only
+    # clicks into shows it has never seen, so a completed prior year costs minutes rather
+    # than hours. Widen this to backfill a year whose shows were never discovered.
     [string]$DiscoverYears,
 
     [switch]$SkipDiscovery,
