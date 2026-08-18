@@ -279,6 +279,61 @@ def mark_nonplacing_complete(conn, show_class_id):
         print_with_timestamp(f"    [WARNING] Error marking class as complete: {e}")
         return False
 
+# How each class row was located, reported in the run summary so a log shows whether the
+# direct path is actually being taken rather than silently falling back to the grid walk.
+ROW_ADDRESSING = {'direct': 0, 'fallback': 0}
+
+def build_class_row_id(grid_id, row_idx):
+    """Predict the ID of the master row holding a class, from the grid's own ID.
+
+    ASPxGridView names master data rows <grid>_DXDataRow<n>, numbered from zero in grid order,
+    and scrape_nonplacing_results_for_show numbers the same rows from one, so row_idx - 1 is
+    the DevExpress index. The Aug 17 run confirms it: every time the positional lookup landed
+    on a detail row and retried, the row it settled on was DXDataRow<row_idx - 1> - row 153
+    resolved to DXDataRow152, row 2 to DXDataRow1, row 211 to DXDataRow210.
+
+    This is a prediction, not a fact about the page, so callers must confirm the row it names
+    really holds the class they want before acting on it.
+
+    Returns: the predicted row ID, or None if the grid ID is not the master grid's.
+    """
+    if not grid_id or not row_idx or row_idx < 1:
+        return None
+    base = grid_id[:-len('_DXMainTable')] if grid_id.endswith('_DXMainTable') else grid_id
+    # Only the master grid numbers class rows this way. A detail or unrelated grid must not be
+    # addressed positionally, so anything else falls back to the walk.
+    if not base.endswith('grMaster'):
+        return None
+    return f'{base}_DXDataRow{row_idx - 1}'
+
+def verify_class_row_cells(cell_texts, class_column_map, class_num, class_name):
+    """Confirm an addressed master row really holds the class we were asked to scrape.
+
+    The row is checked against the same two columns grid_lookup was keyed on, read back off
+    the row itself, so agreeing here means this row is the row that lookup pointed at. Acting
+    on the wrong row would file one class's entries under another, so anything short of a
+    match - unreadable columns, no class number to compare, any disagreement - is a refusal.
+
+    Returns: (matched, detail)
+    """
+    class_idx = (class_column_map or {}).get('Class')
+    if class_idx is None or class_idx >= len(cell_texts):
+        return False, 'class column not readable on that row'
+    expected = str(class_num or '').strip().lower()
+    if not expected:
+        return False, 'no class number to verify against'
+    observed = (cell_texts[class_idx] or '').strip().lower()
+    if observed != expected:
+        return False, f'class column reads {observed!r}, wanted {expected!r}'
+
+    name_idx = (class_column_map or {}).get('Class Name')
+    expected_name = (class_name or '').strip().lower()
+    if name_idx is not None and expected_name and name_idx < len(cell_texts):
+        observed_name = (cell_texts[name_idx] or '').strip().lower()
+        if observed_name != expected_name:
+            return False, f'class name reads {observed_name!r}, wanted {expected_name!r}'
+    return True, f'class {observed}'
+
 def build_nonplacing_detail_selectors(class_row_id):
     """Address the non-placing grid of one class directly from its master row ID.
 
@@ -332,7 +387,7 @@ def should_mark_nonplacing_complete(expected_count, final_count, grid_located, g
         return False, f'only {final_count} of {rows_extracted} extracted row(s) reached the database'
     return True, f'grid exhausted at {final_count}/{expected_count} published row(s)'
 
-def scrape_nonplacing_results_for_class(driver, show_list_id, show_guid, year, show_name, show_class_id, class_num, class_name, entries, placings, row_idx, conn, sleep_short=0.5, sleep_medium=1, sleep_long=3):
+def scrape_nonplacing_results_for_class(driver, show_list_id, show_guid, year, show_name, show_class_id, class_num, class_name, entries, placings, row_idx, conn, sleep_short=0.5, sleep_medium=1, sleep_long=3, class_column_map=None):
     """Scrape non-placing entries for a single class
     
     Args:
@@ -347,6 +402,9 @@ def scrape_nonplacing_results_for_class(driver, show_list_id, show_guid, year, s
         entries: Number of entries
         placings: Number of placings
         row_idx: Row index in the grid (1-based)
+        class_column_map: Column indices of the class grid, used to confirm a directly
+            addressed row really holds this class. Without it every class falls back to
+            walking the grid.
         conn: Database connection
         sleep_short: Short sleep duration in seconds (default: 0.5)
         sleep_medium: Medium sleep duration in seconds (default: 1)
@@ -397,211 +455,249 @@ def scrape_nonplacing_results_for_class(driver, show_list_id, show_guid, year, s
                     "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
             else:
                 raise
-        rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
-        if not rows:
-            all_rows = grid.find_elements(By.TAG_NAME, "tr")
-            rows = []
-            for r in all_rows:
-                try:
-                    row_id = r.get_attribute('id') or ''
-                    row_class = r.get_attribute('class') or ''
-                    # Only include main grid rows, not detail rows (grPlacing, grNonPlacing, or dxdt containers)
-                    if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
-                        # Exclude detail rows from nested grids
-                        if 'grPlacing' not in row_id and 'grNonPlacing' not in row_id and 'dxdt' not in row_id:
-                            rows.append(r)
-                except StaleElementReferenceException:
-                    continue
-                except Exception:
-                    continue
         
-        if row_idx > len(rows):
-            print_with_timestamp(f"    [WARNING] Row {row_idx} no longer available")
-            return driver, 0
-        
-        class_row = rows[row_idx - 1]
-        # Store row ID immediately while element is fresh - ensure it's a class row ID, not a detail row
+        # Address the class row by ID rather than counting rows to it. The walk below reads
+        # every <tr> of the master grid at a round trip each, and it is not even dependable:
+        # 82 times in the Aug 17 run rows[row_idx - 1] landed on a detail row belonging to an
+        # earlier class that was still expanded, costing a second full walk to recover.
         class_row_id = ''
+        class_row_verified = False
         try:
-            # Use retry for getting row ID to handle stale elements
-            def get_row_id():
-                return class_row.get_attribute('id') or ''
-            
-            temp_id = retry_on_stale_element(get_row_id, max_retries=3, delay=sleep_short)
-            if not temp_id:
-                # If retry failed, re-find the row
-                try:
-                    grid = driver.find_element(By.CSS_SELECTOR, 
-                        "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
-                    rows_refresh = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
-                    if not rows_refresh:
-                        all_rows = grid.find_elements(By.TAG_NAME, "tr")
-                        rows_refresh = []
-                        for r in all_rows:
-                            row_id = r.get_attribute('id') or ''
-                            row_class = r.get_attribute('class') or ''
-                            if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
-                                if 'grPlacing' not in row_id and 'grNonPlacing' not in row_id and 'dxdt' not in row_id:
-                                    rows_refresh.append(r)
-                    
-                    if row_idx <= len(rows_refresh):
-                        class_row = rows_refresh[row_idx - 1]
-                        temp_id = class_row.get_attribute('id') or ''
-                except Exception as e2:
-                    print_with_timestamp(f"    [WARNING] Error re-finding row for ID: {e2}")
-            
-            # Verify this is a class row ID (not from grPlacing or grNonPlacing detail tables)
-            # Class rows should have 'grMaster' in their ID path and NOT contain dxdt, grPlacing, or grNonPlacing
-            if temp_id:
-                # Check if it's a detail row - detail rows contain dxdt, grPlacing, or grNonPlacing in the ID path
-                if 'dxdt' in temp_id or 'grPlacing' in temp_id or 'grNonPlacing' in temp_id:
-                    print_with_timestamp(f"    [WARNING] Row {row_idx} has detail grid identifier in ID: {temp_id}")
-                    # This is a detail row - we need to find the parent class row
-                    # Detail rows are children of class rows, so we need to go up the DOM or find the class row differently
-                    # For now, skip this row and try to find the actual class row
-                    class_row_id = ''
-                elif 'grMaster' in temp_id or 'DXMainTable' in temp_id:
-                    # This looks like a valid class row ID
-                    class_row_id = temp_id
-                else:
-                    # Unknown format, but doesn't have detail indicators - accept it
-                    class_row_id = temp_id
-        except Exception as e:
-            print_with_timestamp(f"    [WARNING] Error getting row ID: {e}")
+            grid_id = grid.get_attribute('id') or ''
+        except Exception:
+            grid_id = ''
         
-        if not class_row_id:
-            # Try alternative: re-find all rows and count only class rows (not detail rows)
-            print_with_timestamp(f"    [WARNING] Could not get class row ID for row {row_idx}, re-finding class rows only")
-            # Wait a moment for page to stabilize
-            time.sleep(sleep_short)
-            # Re-find the row and try again, using the same filtering logic as initial row finding
+        candidate_row_id = build_class_row_id(grid_id, row_idx)
+        if not candidate_row_id:
+            print_with_timestamp(f"    [FALLBACK] Grid ID is not the master grid's, walking to row {row_idx}: {grid_id[:60]!r}")
+        else:
             try:
-                # Try to find grid using multiple selectors (same as scrape_nonplacing_results_for_show)
-                grid = None
-                grid_selectors = [
-                    "table[id*='grMaster'][id*='DXMainTable']",
-                    "table[id*='grMaster']",
-                    "table[id*='DXMainTable']",
-                    "table.dxgvTable_Office2010Blue",
-                    "table.dxgvTable",
-                ]
-                
-                for selector in grid_selectors:
-                    try:
-                        grids = driver.find_elements(By.CSS_SELECTOR, selector)
-                        for g in grids:
-                            if g.is_displayed():
-                                tr_count = len(g.find_elements(By.TAG_NAME, "tr"))
-                                if tr_count > 1:
-                                    grid = g
-                                    break
-                        if grid:
-                            break
-                    except:
-                        continue
-                
-                if not grid:
-                    print_with_timestamp(f"    [ERROR] Could not find grid for retry")
-                    return driver, 0
-                
+                candidate_row = driver.find_element(By.ID, candidate_row_id)
+                cell_texts = [c.text.strip() for c in candidate_row.find_elements(By.TAG_NAME, "td")]
+                matched, detail = verify_class_row_cells(cell_texts, class_column_map, class_num, class_name)
+                if matched:
+                    class_row_id = candidate_row_id
+                    class_row_verified = True
+                else:
+                    print_with_timestamp(f"    [FALLBACK] {candidate_row_id} is not class {class_num} ({detail}), walking to row {row_idx}")
+            except NoSuchElementException:
+                print_with_timestamp(f"    [FALLBACK] No row {candidate_row_id} on the page, walking to row {row_idx}")
+            except Exception as e:
+                print_with_timestamp(f"    [FALLBACK] Could not address row {row_idx} directly ({e}), walking")
+        
+        ROW_ADDRESSING['direct' if class_row_verified else 'fallback'] += 1
+        
+        # Fall back to walking the grid when the row could not be addressed directly.
+        if not class_row_verified:
+            rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
+            if not rows:
                 all_rows = grid.find_elements(By.TAG_NAME, "tr")
-                class_rows_only = []
+                rows = []
                 for r in all_rows:
                     try:
                         row_id = r.get_attribute('id') or ''
                         row_class = r.get_attribute('class') or ''
-                        # Use the same filtering logic as initial row finding (lines 343-346)
-                        # Only include main grid rows, not detail rows
+                        # Only include main grid rows, not detail rows (grPlacing, grNonPlacing, or dxdt containers)
                         if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
-                            # Exclude detail rows from nested grids - same logic as initial finding
+                            # Exclude detail rows from nested grids
                             if 'grPlacing' not in row_id and 'grNonPlacing' not in row_id and 'dxdt' not in row_id:
-                                class_rows_only.append(r)
+                                rows.append(r)
                     except StaleElementReferenceException:
                         continue
                     except Exception:
                         continue
-                
-                print_with_timestamp(f"    [DEBUG] Found {len(class_rows_only)} class rows (excluding detail rows) out of {len(all_rows)} total rows")
-                
-                if row_idx <= len(class_rows_only):
-                    class_row = class_rows_only[row_idx - 1]
-                    try:
-                        temp_id = class_row.get_attribute('id') or ''
-                        # Validate it's not a detail row
-                        if temp_id and 'dxdt' not in temp_id and 'grPlacing' not in temp_id and 'grNonPlacing' not in temp_id:
-                            class_row_id = temp_id
-                            print_with_timestamp(f"    [OK] Retrieved row ID on retry: {class_row_id}")
-                        elif temp_id:
-                            print_with_timestamp(f"    [WARNING] Row ID still contains detail grid identifier: {temp_id}")
-                    except StaleElementReferenceException:
-                        print_with_timestamp(f"    [WARNING] Stale element when getting row ID on retry")
-                else:
-                    print_with_timestamp(f"    [WARNING] Row index {row_idx} out of range (found {len(class_rows_only)} class rows)")
-                    # Debug: print first few row IDs to understand structure
-                    if class_rows_only:
-                        print_with_timestamp(f"    [DEBUG] First few class row IDs:")
-                        for i, r in enumerate(class_rows_only[:5], 1):
-                            try:
-                                debug_id = r.get_attribute('id') or 'no-id'
-                                print_with_timestamp(f"      Row {i}: {debug_id[:80]}")
-                            except:
-                                print_with_timestamp(f"      Row {i}: [error getting ID]")
-                    else:
-                        # Debug: print all row IDs to see what we're getting
-                        print_with_timestamp(f"    [DEBUG] No class rows found. Sample of all row IDs:")
-                        for i, r in enumerate(all_rows[:10], 1):
-                            try:
-                                debug_id = r.get_attribute('id') or 'no-id'
-                                debug_class = r.get_attribute('class') or 'no-class'
-                                print_with_timestamp(f"      Row {i}: id='{debug_id[:60]}', class='{debug_class[:40]}'")
-                            except:
-                                print_with_timestamp(f"      Row {i}: [error getting attributes]")
-            except Exception as e2:
-                print_with_timestamp(f"    [ERROR] Error on retry: {e2}")
-                import traceback
-                traceback.print_exc()
         
-        if not class_row_id:
-            print_with_timestamp(f"    [ERROR] Could not get valid class row ID for row {row_idx} after retry")
-            log_import_activity(conn, 'scrape_class_nonplacing_results.py', action='ERROR', 
-                              error_detail=f'Could not get valid class row ID for row {row_idx}',
-                              additional_info=f'ShowClassID: {show_class_id}, Class: {class_num}, RowIdx: {row_idx}')
-            return driver, 0
+            if row_idx > len(rows):
+                print_with_timestamp(f"    [WARNING] Row {row_idx} no longer available")
+                return driver, 0
+        
+            class_row = rows[row_idx - 1]
+            # Store row ID immediately while element is fresh - ensure it's a class row ID, not a detail row
+            class_row_id = ''
+            try:
+                # Use retry for getting row ID to handle stale elements
+                def get_row_id():
+                    return class_row.get_attribute('id') or ''
+            
+                temp_id = retry_on_stale_element(get_row_id, max_retries=3, delay=sleep_short)
+                if not temp_id:
+                    # If retry failed, re-find the row
+                    try:
+                        grid = driver.find_element(By.CSS_SELECTOR, 
+                            "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+                        rows_refresh = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
+                        if not rows_refresh:
+                            all_rows = grid.find_elements(By.TAG_NAME, "tr")
+                            rows_refresh = []
+                            for r in all_rows:
+                                row_id = r.get_attribute('id') or ''
+                                row_class = r.get_attribute('class') or ''
+                                if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
+                                    if 'grPlacing' not in row_id and 'grNonPlacing' not in row_id and 'dxdt' not in row_id:
+                                        rows_refresh.append(r)
+                    
+                        if row_idx <= len(rows_refresh):
+                            class_row = rows_refresh[row_idx - 1]
+                            temp_id = class_row.get_attribute('id') or ''
+                    except Exception as e2:
+                        print_with_timestamp(f"    [WARNING] Error re-finding row for ID: {e2}")
+            
+                # Verify this is a class row ID (not from grPlacing or grNonPlacing detail tables)
+                # Class rows should have 'grMaster' in their ID path and NOT contain dxdt, grPlacing, or grNonPlacing
+                if temp_id:
+                    # Check if it's a detail row - detail rows contain dxdt, grPlacing, or grNonPlacing in the ID path
+                    if 'dxdt' in temp_id or 'grPlacing' in temp_id or 'grNonPlacing' in temp_id:
+                        print_with_timestamp(f"    [WARNING] Row {row_idx} has detail grid identifier in ID: {temp_id}")
+                        # This is a detail row - we need to find the parent class row
+                        # Detail rows are children of class rows, so we need to go up the DOM or find the class row differently
+                        # For now, skip this row and try to find the actual class row
+                        class_row_id = ''
+                    elif 'grMaster' in temp_id or 'DXMainTable' in temp_id:
+                        # This looks like a valid class row ID
+                        class_row_id = temp_id
+                    else:
+                        # Unknown format, but doesn't have detail indicators - accept it
+                        class_row_id = temp_id
+            except Exception as e:
+                print_with_timestamp(f"    [WARNING] Error getting row ID: {e}")
+        
+            if not class_row_id:
+                # Try alternative: re-find all rows and count only class rows (not detail rows)
+                print_with_timestamp(f"    [WARNING] Could not get class row ID for row {row_idx}, re-finding class rows only")
+                # Wait a moment for page to stabilize
+                time.sleep(sleep_short)
+                # Re-find the row and try again, using the same filtering logic as initial row finding
+                try:
+                    # Try to find grid using multiple selectors (same as scrape_nonplacing_results_for_show)
+                    grid = None
+                    grid_selectors = [
+                        "table[id*='grMaster'][id*='DXMainTable']",
+                        "table[id*='grMaster']",
+                        "table[id*='DXMainTable']",
+                        "table.dxgvTable_Office2010Blue",
+                        "table.dxgvTable",
+                    ]
+                
+                    for selector in grid_selectors:
+                        try:
+                            grids = driver.find_elements(By.CSS_SELECTOR, selector)
+                            for g in grids:
+                                if g.is_displayed():
+                                    tr_count = len(g.find_elements(By.TAG_NAME, "tr"))
+                                    if tr_count > 1:
+                                        grid = g
+                                        break
+                            if grid:
+                                break
+                        except:
+                            continue
+                
+                    if not grid:
+                        print_with_timestamp(f"    [ERROR] Could not find grid for retry")
+                        return driver, 0
+                
+                    all_rows = grid.find_elements(By.TAG_NAME, "tr")
+                    class_rows_only = []
+                    for r in all_rows:
+                        try:
+                            row_id = r.get_attribute('id') or ''
+                            row_class = r.get_attribute('class') or ''
+                            # Use the same filtering logic as initial row finding (lines 343-346)
+                            # Only include main grid rows, not detail rows
+                            if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
+                                # Exclude detail rows from nested grids - same logic as initial finding
+                                if 'grPlacing' not in row_id and 'grNonPlacing' not in row_id and 'dxdt' not in row_id:
+                                    class_rows_only.append(r)
+                        except StaleElementReferenceException:
+                            continue
+                        except Exception:
+                            continue
+                
+                    print_with_timestamp(f"    [DEBUG] Found {len(class_rows_only)} class rows (excluding detail rows) out of {len(all_rows)} total rows")
+                
+                    if row_idx <= len(class_rows_only):
+                        class_row = class_rows_only[row_idx - 1]
+                        try:
+                            temp_id = class_row.get_attribute('id') or ''
+                            # Validate it's not a detail row
+                            if temp_id and 'dxdt' not in temp_id and 'grPlacing' not in temp_id and 'grNonPlacing' not in temp_id:
+                                class_row_id = temp_id
+                                print_with_timestamp(f"    [OK] Retrieved row ID on retry: {class_row_id}")
+                            elif temp_id:
+                                print_with_timestamp(f"    [WARNING] Row ID still contains detail grid identifier: {temp_id}")
+                        except StaleElementReferenceException:
+                            print_with_timestamp(f"    [WARNING] Stale element when getting row ID on retry")
+                    else:
+                        print_with_timestamp(f"    [WARNING] Row index {row_idx} out of range (found {len(class_rows_only)} class rows)")
+                        # Debug: print first few row IDs to understand structure
+                        if class_rows_only:
+                            print_with_timestamp(f"    [DEBUG] First few class row IDs:")
+                            for i, r in enumerate(class_rows_only[:5], 1):
+                                try:
+                                    debug_id = r.get_attribute('id') or 'no-id'
+                                    print_with_timestamp(f"      Row {i}: {debug_id[:80]}")
+                                except:
+                                    print_with_timestamp(f"      Row {i}: [error getting ID]")
+                        else:
+                            # Debug: print all row IDs to see what we're getting
+                            print_with_timestamp(f"    [DEBUG] No class rows found. Sample of all row IDs:")
+                            for i, r in enumerate(all_rows[:10], 1):
+                                try:
+                                    debug_id = r.get_attribute('id') or 'no-id'
+                                    debug_class = r.get_attribute('class') or 'no-class'
+                                    print_with_timestamp(f"      Row {i}: id='{debug_id[:60]}', class='{debug_class[:40]}'")
+                                except:
+                                    print_with_timestamp(f"      Row {i}: [error getting attributes]")
+                except Exception as e2:
+                    print_with_timestamp(f"    [ERROR] Error on retry: {e2}")
+                    import traceback
+                    traceback.print_exc()
+        
+            if not class_row_id:
+                print_with_timestamp(f"    [ERROR] Could not get valid class row ID for row {row_idx} after retry")
+                log_import_activity(conn, 'scrape_class_nonplacing_results.py', action='ERROR', 
+                                  error_detail=f'Could not get valid class row ID for row {row_idx}',
+                                  additional_info=f'ShowClassID: {show_class_id}, Class: {class_num}, RowIdx: {row_idx}')
+                return driver, 0
         
         # Expand the row if not already expanded
         print_with_timestamp(f"    Attempting to expand row {row_idx}...")
         # Re-find the row right before expanding
-        try:
-            grid = driver.find_element(By.CSS_SELECTOR,
-                "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
-            all_rows = grid.find_elements(By.TAG_NAME, "tr")
-            rows_refresh = []
-            for r in all_rows:
-                try:
-                    row_id = r.get_attribute('id') or ''
-                    row_class = r.get_attribute('class') or ''
-                    if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
-                        rows_refresh.append(r)
-                except StaleElementReferenceException:
-                    continue
+        # Only needed when the ID came from counting rows, which a re-render can
+        # invalidate. A verified ID names its row on its own, and expand_row takes the
+        # ID rather than the element, so there is no stale reference to refresh.
+        if not class_row_verified:
+            try:
+                grid = driver.find_element(By.CSS_SELECTOR,
+                    "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
+                all_rows = grid.find_elements(By.TAG_NAME, "tr")
+                rows_refresh = []
+                for r in all_rows:
+                    try:
+                        row_id = r.get_attribute('id') or ''
+                        row_class = r.get_attribute('class') or ''
+                        if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
+                            rows_refresh.append(r)
+                    except StaleElementReferenceException:
+                        continue
             
-                if row_idx <= len(rows_refresh):
-                    class_row = rows_refresh[row_idx - 1]
-                    # Get fresh class row ID and verify it's from the main grid, not a detail row
-                    temp_id = class_row.get_attribute('id') or ''
-                    # Accept any row ID that doesn't contain detail grid identifiers
-                    if temp_id and 'grPlacing' not in temp_id and 'grNonPlacing' not in temp_id:
-                        # Additional check: ensure it's from the main grid
-                        if 'grMaster' in temp_id or 'DXMainTable' in temp_id or 'dxdt' not in temp_id:
-                            class_row_id = temp_id
-                        else:
-                            print_with_timestamp(f"      [WARNING] Row ID appears to be a detail row: {temp_id}")
-                    elif temp_id:
-                        # If it has detail grid identifiers, don't use it
-                        print_with_timestamp(f"      [WARNING] Row ID contains detail grid identifier (grPlacing/grNonPlacing): {temp_id}, keeping original")
-                    # If invalid, keep the original class_row_id
-        except Exception as e:
-            print_with_timestamp(f"      [DEBUG] Error re-finding row before expand: {e}")
+                    if row_idx <= len(rows_refresh):
+                        class_row = rows_refresh[row_idx - 1]
+                        # Get fresh class row ID and verify it's from the main grid, not a detail row
+                        temp_id = class_row.get_attribute('id') or ''
+                        # Accept any row ID that doesn't contain detail grid identifiers
+                        if temp_id and 'grPlacing' not in temp_id and 'grNonPlacing' not in temp_id:
+                            # Additional check: ensure it's from the main grid
+                            if 'grMaster' in temp_id or 'DXMainTable' in temp_id or 'dxdt' not in temp_id:
+                                class_row_id = temp_id
+                            else:
+                                print_with_timestamp(f"      [WARNING] Row ID appears to be a detail row: {temp_id}")
+                        elif temp_id:
+                            # If it has detail grid identifiers, don't use it
+                            print_with_timestamp(f"      [WARNING] Row ID contains detail grid identifier (grPlacing/grNonPlacing): {temp_id}, keeping original")
+                        # If invalid, keep the original class_row_id
+            except Exception as e:
+                print_with_timestamp(f"      [DEBUG] Error re-finding row before expand: {e}")
         
         def create_reconnect_func():
             return reconnect_browser_and_navigate(driver, show_guid, year, show_name)
@@ -618,26 +714,6 @@ def scrape_nonplacing_results_for_class(driver, show_list_id, show_guid, year, s
                 )
             except:
                 time.sleep(sleep_short)  # Fallback to short sleep if wait fails
-            
-            # Re-find the row after expansion
-            try:
-                grid = driver.find_element(By.CSS_SELECTOR,
-                    "table[id*='grMaster'], table.dxgvTable, table[id*='DXMainTable']")
-                all_rows = grid.find_elements(By.TAG_NAME, "tr")
-                rows = []
-                for r in all_rows:
-                    row_id = r.get_attribute('id') or ''
-                    row_class = r.get_attribute('class') or ''
-                    # Only include main grid rows, not detail rows
-                    if ('DataRow' in row_id or 'dxgvDataRow' in row_class) and 'HeaderRow' not in row_id and 'FilterRow' not in row_id:
-                        # Exclude detail rows from nested grids
-                        if 'grPlacing' not in row_id and 'grNonPlacing' not in row_id and 'dxdt' not in row_id:
-                            rows.append(r)
-                
-                if row_idx <= len(rows):
-                    class_row = rows[row_idx - 1]
-            except:
-                pass
             
             # Find non-placing entries detail rows with retry on stale element errors
             detail_rows = []
@@ -1260,7 +1336,8 @@ def scrape_nonplacing_results_for_show(driver, show_list_id, show_guid, year, sh
             driver, entries_saved = scrape_nonplacing_results_for_class(
                 driver, show_list_id, show_guid, year, show_name,
                 show_class_id, class_num, class_name, entries, placings, row_idx, conn,
-                sleep_short=sleep_short, sleep_medium=sleep_medium, sleep_long=sleep_long
+                sleep_short=sleep_short, sleep_medium=sleep_medium, sleep_long=sleep_long,
+                class_column_map=class_column_map
             )
             total_entries_saved += entries_saved
             
@@ -1270,7 +1347,8 @@ def scrape_nonplacing_results_for_show(driver, show_list_id, show_guid, year, sh
                                   target_table='ShowResults', row_count=entries_saved,
                                   additional_info=f'ShowClassID: {show_class_id}, Class: {class_num}, Entries saved: {entries_saved}')
         
-        print_with_timestamp(f"  [OK] Completed non-placing entries for ShowGUID {show_guid}: {total_entries_saved} entries saved")
+        print_with_timestamp(f"  [OK] Completed non-placing entries for ShowGUID {show_guid}: {total_entries_saved} entries saved "
+                             f"(rows addressed directly: {ROW_ADDRESSING['direct']}, by walking: {ROW_ADDRESSING['fallback']})")
         
         # Log show processing completion
         log_import_activity(conn, 'scrape_class_nonplacing_results.py', action='PROCESS_SHOW_COMPLETE', 
@@ -1348,8 +1426,13 @@ def main(start_from_show_guid=None, sleep_short=0.5, sleep_medium=1):
             
             time.sleep(sleep_medium)
         
+        addressed = ROW_ADDRESSING['direct'] + ROW_ADDRESSING['fallback']
         print_with_timestamp(f"\n{'='*60}")
         print_with_timestamp(f"Scraping complete! Total non-placing entries collected: {total_entries}")
+        if addressed:
+            print_with_timestamp(f"Class rows addressed directly: {ROW_ADDRESSING['direct']}/{addressed} "
+                                 f"({100 * ROW_ADDRESSING['direct'] / addressed:.1f}%), "
+                                 f"reached by walking the grid: {ROW_ADDRESSING['fallback']}")
         print_with_timestamp(f"{'='*60}\n")
         
         # Log completion
