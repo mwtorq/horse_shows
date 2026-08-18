@@ -10,6 +10,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException, InvalidSessionIdException
+import re
 import time
 import pyodbc
 from datetime import datetime
@@ -278,8 +279,25 @@ def mark_nonplacing_complete(conn, show_class_id):
         print_with_timestamp(f"    [WARNING] Error marking class as complete: {e}")
         return False
 
+def build_nonplacing_detail_selectors(class_row_id):
+    """Address the non-placing grid of one class directly from its master row ID.
+
+    ASPxGridView names a master data row <grid>_DXDataRow<n> and the detail row it expands
+    into <grid>_dxdt<n>, so the non-placing grid of that class is <grid>_dxdt<n>_grNonPlacing
+    and its rows are ..._grNonPlacing_DXDataRow<i>. Selecting on that prefix reads each row
+    exactly once and cannot pick up a neighbouring class that is still expanded.
+
+    Returns: (row_selector, table_selector), or (None, None) if the ID is not in that form.
+    """
+    match = re.match(r'^(.*?)DXDataRow(\d+)$', class_row_id or '')
+    if not match:
+        return None, None
+    detail_prefix = f'{match.group(1)}dxdt{match.group(2)}_'
+    return (f"tr[id^='{detail_prefix}'][id*='grNonPlacing'][id*='DataRow']",
+            f"table[id^='{detail_prefix}'][id*='grNonPlacing']")
+
 def should_mark_nonplacing_complete(expected_count, final_count, grid_located, grid_rows,
-                                    rows_extracted, rows_failed, duplicate_entries, reconnected):
+                                    rows_extracted, rows_accounted, rows_failed, reconnected):
     """Decide whether a class can leave the non-placing work queue.
 
     HorseShowsOnline's Entries column counts entries, not published result rows. Warm-up,
@@ -289,9 +307,14 @@ def should_mark_nonplacing_complete(expected_count, final_count, grid_located, g
 
     A class is therefore also retired once the non-placing grid was positively identified
     and everything it contained reached the database. Every signal that the read may have
-    been incomplete - grid never found, browser reconnected mid-read, unreadable rows,
-    repeated entry numbers, rows left unextracted or unsaved - keeps the class queued, so a
-    genuinely short scrape is still retried.
+    been incomplete - grid never found, browser reconnected mid-read, unreadable rows, grid
+    rows nothing was done with, or extracted rows that never landed - keeps the class
+    queued, so a genuinely short scrape is still retried.
+
+    A repeated entry number is deliberately not one of those signals. ShowResults treats
+    (ShowClassID, Entry) as unique, so a grid row repeating an entry number can never be
+    stored however many times the class is rescraped; blocking on it would queue the class
+    forever. Such rows count as accounted for rather than missing.
 
     Returns: (mark_complete, reason)
     """
@@ -303,10 +326,8 @@ def should_mark_nonplacing_complete(expected_count, final_count, grid_located, g
         return False, 'browser reconnected while reading the grid'
     if rows_failed > 0:
         return False, f'{rows_failed} grid row(s) could not be read'
-    if duplicate_entries > 0:
-        return False, f'{duplicate_entries} repeated entry number(s) in the grid'
-    if rows_extracted < grid_rows:
-        return False, f'only {rows_extracted} of {grid_rows} grid row(s) extracted'
+    if rows_accounted < grid_rows:
+        return False, f'{grid_rows - rows_accounted} of {grid_rows} grid row(s) unaccounted for'
     if final_count < rows_extracted:
         return False, f'only {final_count} of {rows_extracted} extracted row(s) reached the database'
     return True, f'grid exhausted at {final_count}/{expected_count} published row(s)'
@@ -634,6 +655,32 @@ def scrape_nonplacing_results_for_class(driver, show_list_id, show_guid, year, s
             strategy_success = False
             driver_reconnected = False
             
+            # Strategy 0: address this class's non-placing rows by ID prefix. Strategy 1 below
+            # walks every <tr> of the master grid to locate the class row, which costs one
+            # round trip per row of the whole grid, and then collects rows from each wrapper
+            # table the grid is nested in, which costs three round trips per data row.
+            row_selector, table_selector = build_nonplacing_detail_selectors(class_row_id)
+            if row_selector:
+                try:
+                    grid_tables = driver.find_elements(By.CSS_SELECTOR, table_selector)
+                    if grid_tables:
+                        grid_located = True
+                        # The innermost table carries the header and data rows; it has the
+                        # longest ID because DevExpress appends to the prefix as it nests.
+                        grid_table = max(grid_tables, key=lambda t: len(t.get_attribute('id') or ''))
+                        for nr in driver.find_elements(By.CSS_SELECTOR, row_selector):
+                            detail_rows.append((nr, grid_table))
+                        if detail_rows:
+                            print_with_timestamp(f"      Strategy 0 found {len(detail_rows)} non-placing entry rows")
+                            strategy_success = True
+                        else:
+                            print_with_timestamp(f"      Strategy 0 found the non-placing grid with no rows")
+                            strategy_success = True
+                except Exception as e:
+                    print_with_timestamp(f"      [DEBUG] Strategy 0 unavailable, falling back: {e}")
+                    detail_rows = []
+                    grid_located = False
+            
             for strategy_attempt in range(max_strategy_retries):
                 if strategy_success:
                     break
@@ -688,7 +735,10 @@ def scrape_nonplacing_results_for_class(driver, show_list_id, show_guid, year, s
                     
                     if class_row_idx >= 0:
                         # Look for rows following the class row that contain non-placing entry grids
+                        rows_collected = False
                         for i in range(class_row_idx + 1, len(all_trs)):
+                            if rows_collected:
+                                break
                             try:
                                 next_tr = all_trs[i]
                                 next_tr_id = next_tr.get_attribute('id') or ''
@@ -732,6 +782,12 @@ def scrape_nonplacing_results_for_class(driver, show_list_id, show_guid, year, s
                                                         seen_detail_row_ids.add(nr_id)
                                                     detail_rows.append((nr, nested_table))
                                                 break
+                                    
+                                    # The remaining nested tables are the wrappers this grid sits
+                                    # in and hold the same rows again; stop rather than re-read them.
+                                    if detail_rows:
+                                        rows_collected = True
+                                        break
                             except StaleElementReferenceException:
                                 # If stale element, break out and retry the whole strategy
                                 raise
@@ -857,6 +913,7 @@ def scrape_nonplacing_results_for_class(driver, show_list_id, show_guid, year, s
             all_entry_details = []
             rows_failed = 0
             duplicate_entries = 0
+            rows_truncated = 0
             
             if detail_rows:
                 # Get column mapping for non-placing entries (same as placing but without Place)
@@ -899,7 +956,8 @@ def scrape_nonplacing_results_for_class(driver, show_list_id, show_guid, year, s
                                     else:
                                         entry_data[field] = ''
                                 
-                                # Check for duplicates using Entry number
+                                # Check for duplicates using Entry number. ShowResults keys a
+                                # result on (ShowClassID, Entry), so a repeat is unstorable.
                                 entry_number = entry_data.get('Entry', '').strip()
                                 if entry_number:
                                     if entry_number in seen_entries:
@@ -909,6 +967,8 @@ def scrape_nonplacing_results_for_class(driver, show_list_id, show_guid, year, s
                                 
                                 if entry_data and len(all_entry_details) < max_nonplacing:
                                     all_entry_details.append(entry_data)
+                                else:
+                                    rows_truncated += 1
                             else:
                                 rows_failed += 1
                         except StaleElementReferenceException:
@@ -943,6 +1003,8 @@ def scrape_nonplacing_results_for_class(driver, show_list_id, show_guid, year, s
                                     seen_entries.add(entry_number)
                                     if len(all_entry_details) < max_nonplacing:
                                         all_entry_details.append(entry_details)
+                                    else:
+                                        rows_truncated += 1
                                 else:
                                     rows_failed += 1
                             else:
@@ -971,9 +1033,10 @@ def scrape_nonplacing_results_for_class(driver, show_list_id, show_guid, year, s
             
             try:
                 final_count = get_nonplacing_count(conn, show_class_id)
+                rows_accounted = len(all_entry_details) + duplicate_entries + rows_truncated + rows_failed
                 mark_complete, reason = should_mark_nonplacing_complete(
                     expected_count, final_count, grid_located, len(detail_rows),
-                    len(all_entry_details), rows_failed, duplicate_entries, driver_reconnected)
+                    len(all_entry_details), rows_accounted, rows_failed, driver_reconnected)
                 
                 if mark_complete:
                     if mark_nonplacing_complete(conn, show_class_id):
