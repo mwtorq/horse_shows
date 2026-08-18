@@ -929,6 +929,17 @@ def activate_shows_by_year_tab(driver, sleep_medium=0.5, sleep_short=0.2):
                     break
             
             if not target_tab:
+                # Matching li.dxtc-tab on .text is not reliable: on some renders the tab strip
+                # enumerated here reports a different set of labels and never yields this tab,
+                # even though its link is present. Methods 2-4 above already cope with that, so
+                # reuse them here instead of giving up on the one lookup known to fail.
+                try:
+                    link = driver.find_element(By.PARTIAL_LINK_TEXT, "Shows By Year")
+                    target_tab = link.find_element(By.XPATH, "./ancestor::li[1]")
+                except Exception:
+                    target_tab = shows_by_year_tab
+            
+            if not target_tab:
                 print_with_timestamp("  [ERROR] Could not re-find tab for clicking")
                 return False
             

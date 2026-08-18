@@ -219,6 +219,95 @@ def get_column_indices(grid):
     
     return column_map
 
+def get_grid_row_keys(driver, grid_element=None):
+    """Return the DevExpress grid's row keys (the ShowGUIDs) for the current page.
+
+    The page's own row-click handler is
+    ``window.location = 'ShowDetails?ShowGUID=' + s.GetRowKey(e.visibleIndex)``,
+    so the row key IS the ShowGUID and can be read without navigating.
+
+    Returns a list of strings, or None if the client-side grid API is
+    unavailable (different DevExpress version / theme), in which case callers
+    must fall back to clicking each row.
+    """
+    # 'grMaster' is the grid's DevExpress ClientInstanceName. The full ClientID
+    # (ctl00_MainContent_grMaster) is also a window global, but it resolves to the
+    # <table> element, not the grid object - hence the capability check below.
+    candidate_names = ['grMaster', 'ctl00_MainContent_grMaster']
+
+    # Also try the name derived from the table element we already found.
+    if grid_element is not None:
+        try:
+            element_id = grid_element.get_attribute('id') or ''
+            for suffix in ('_DXMainTable', '_MainTable'):
+                if element_id.endswith(suffix):
+                    element_id = element_id[:-len(suffix)]
+                    break
+            for name in (element_id.split('_')[-1], element_id):
+                if name and name not in candidate_names:
+                    candidate_names.append(name)
+        except Exception:
+            pass
+
+    script = """
+        var names = arguments[0] || [];
+        if (typeof ASPxClientGridView === 'undefined') { return null; }
+        function usable(o) {
+            return o && typeof o.GetRowKey === 'function' &&
+                   typeof o.GetVisibleRowsOnPage === 'function';
+        }
+        var grid = null;
+        for (var i = 0; i < names.length; i++) {
+            try {
+                var candidate = ASPxClientGridView.Cast(names[i]);
+                if (usable(candidate)) { grid = candidate; break; }
+            } catch (e) {}
+        }
+        if (!grid) {
+            for (var key in window) {
+                if (key.indexOf('grMaster') < 0) { continue; }
+                try {
+                    if (usable(window[key])) { grid = window[key]; break; }
+                } catch (e) {}
+            }
+        }
+        if (!grid) { return null; }
+        var count = grid.GetVisibleRowsOnPage();
+        if (!count || count < 1) { return null; }
+        var keys = [];
+        for (var r = 0; r < count; r++) {
+            var k = grid.GetRowKey(r);
+            keys.push((k === null || k === undefined) ? '' : String(k));
+        }
+        return keys;
+    """
+
+    try:
+        keys = driver.execute_script(script, candidate_names)
+    except Exception as e:
+        print(f"  [WARNING] Could not read grid row keys: {e}")
+        return None
+
+    if not keys or not isinstance(keys, list):
+        return None
+
+    return [str(k).strip() for k in keys]
+
+def get_known_show_guids(conn, year):
+    """Load the ShowGUIDs already recorded for a year into a set."""
+    if not conn:
+        return set()
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT ShowGUID FROM sResults.ShowList WHERE Year = ?", year)
+        guids = {row[0].strip() for row in cursor.fetchall() if row[0] and row[0].strip()}
+        cursor.close()
+        return guids
+    except Exception as e:
+        print(f"  [WARNING] Could not load known ShowGUIDs for {year}: {e}")
+        return set()
+
 def save_single_show_to_database(show_data, conn):
     """Save a single show to the database"""
     if not conn or not show_data:
@@ -294,13 +383,17 @@ def save_single_show_to_database(show_data, conn):
         print(f"    [WARNING] Error saving show to database: {e}")
         conn.rollback()
 
-def extract_show_data_from_row(row_element, driver, base_url, column_map, year, conn=None):
-    """Extract data from a single grid row and get ShowGUID by clicking the show name"""
+def extract_row_cell_data(row_element, column_map):
+    """Extract the visible cell values (and parsed dates) from one grid row.
+
+    Does not navigate, so it is safe to call for rows we already have a
+    ShowGUID for. Returns (show_data, cells) or (None, None).
+    """
     try:
         # Find all cells in the row
         cells = row_element.find_elements(By.TAG_NAME, "td")
         if len(cells) < 3:
-            return None
+            return None, None
         
         show_data = {}
         
@@ -335,7 +428,7 @@ def extract_show_data_from_row(row_element, driver, base_url, column_map, year, 
             print(f"    [WARNING] Error extracting cell data: {e}")
             import traceback
             traceback.print_exc()
-            return None
+            return None, None
         
         # Parse start and end dates from Show Date field
         show_date_str = show_data.get('Show Date', '')
@@ -348,6 +441,52 @@ def extract_show_data_from_row(row_element, driver, base_url, column_map, year, 
         if show_date_str and (not start_date or not end_date or start_date == end_date == show_date_str):
             print(f"    [DEBUG] Date string: '{show_date_str}' -> Start: '{start_date}', End: '{end_date}'")
         
+        return show_data, cells
+        
+    except Exception as e:
+        print(f"    [ERROR] Error extracting row data: {e}")
+        return None, None
+
+def extract_show_data_from_known_row(row_element, column_map, year, show_guid, conn=None):
+    """Upsert a row whose ShowGUID is already known, without navigating.
+
+    Returns None if the cells could not be read or the supplied GUID is blank,
+    so the caller can fall back to the click path. A blank GUID must never
+    reach save_single_show_to_database - it would match on ShowName instead,
+    and ShowName + Year is not unique.
+    """
+    show_guid = (show_guid or '').strip()
+    if not show_guid:
+        return None
+    
+    show_data, _cells = extract_row_cell_data(row_element, column_map)
+    if not show_data:
+        return None
+    
+    show_data['ShowGUID'] = show_guid
+    show_data['Year'] = year
+    
+    if conn:
+        try:
+            save_single_show_to_database(show_data, conn)
+            log_import_activity(conn, 'scrape_shows_by_year.py', target_table='ShowList',
+                              action='INSERT_OR_UPDATE', row_count=1,
+                              additional_info=f"ShowGUID: {show_guid}, Year: {year}, Source: grid row key (no click)")
+        except Exception as e:
+            print(f"    [WARNING] Failed to save show to database: {e}")
+            log_import_activity(conn, 'scrape_shows_by_year.py', target_table='ShowList',
+                              action='ERROR', error_detail=str(e),
+                              additional_info=f"Show: {show_data.get('Show Name', 'Unknown')}, Year: {year}")
+    
+    return show_data
+
+def extract_show_data_from_row(row_element, driver, base_url, column_map, year, conn=None):
+    """Extract data from a single grid row and get ShowGUID by clicking the show name"""
+    try:
+        show_data, cells = extract_row_cell_data(row_element, column_map)
+        if not show_data:
+            return None
+        
         # Get ShowGUID by clicking on the row to navigate
         show_data['ShowGUID'] = ''
         original_url = driver.current_url  # Store outside try block for exception handler
@@ -355,6 +494,9 @@ def extract_show_data_from_row(row_element, driver, base_url, column_map, year, 
             # Click on the row itself (not a specific cell) to navigate
             show_name = show_data.get('Show Name', 'Unknown')
             print(f"    Clicking row for '{show_name}' to get ShowGUID...")
+            if conn:
+                log_import_activity(conn, 'scrape_shows_by_year.py', action='NAVIGATE_TO_SHOW', 
+                                  additional_info=f'Year: {year}, Show: {show_name[:50]}, Extracting ShowGUID')
             
             # Store current URL and window handles
             original_handles = driver.window_handles
@@ -401,12 +543,18 @@ def extract_show_data_from_row(row_element, driver, base_url, column_map, year, 
             if 'ShowGUID' in params:
                 show_data['ShowGUID'] = params['ShowGUID'][0]
                 print(f"    [OK] Extracted ShowGUID: {show_data['ShowGUID']}")
+                if conn:
+                    log_import_activity(conn, 'scrape_shows_by_year.py', action='SHOWGUID_EXTRACTED', 
+                                      additional_info=f'Year: {year}, Show: {show_name[:50]}, ShowGUID: {show_data["ShowGUID"]}')
             else:
                 # Try regex pattern
                 guid_match = re.search(r'ShowGUID[=:]([a-fA-F0-9-]+)', current_url)
                 if guid_match:
                     show_data['ShowGUID'] = guid_match.group(1)
                     print(f"    [OK] Extracted ShowGUID (regex): {show_data['ShowGUID']}")
+                    if conn:
+                        log_import_activity(conn, 'scrape_shows_by_year.py', action='SHOWGUID_EXTRACTED', 
+                                          additional_info=f'Year: {year}, Show: {show_name[:50]}, ShowGUID: {show_data["ShowGUID"]} (regex)')
             
             # Navigate back to ShowSelector page with year selected
             if len(current_handles) > len(original_handles):
@@ -483,8 +631,14 @@ def extract_show_data_from_row(row_element, driver, base_url, column_map, year, 
         if conn:
             try:
                 save_single_show_to_database(show_data, conn)
+                log_import_activity(conn, 'scrape_shows_by_year.py', target_table='ShowList', 
+                                  action='INSERT_OR_UPDATE', row_count=1,
+                                  additional_info=f"ShowGUID: {show_data.get('ShowGUID', 'N/A')}, Year: {year}")
             except Exception as e:
                 print(f"    [WARNING] Failed to save show to database: {e}")
+                log_import_activity(conn, 'scrape_shows_by_year.py', target_table='ShowList', 
+                                  action='ERROR', error_detail=str(e),
+                                  additional_info=f"Show: {show_data.get('Show Name', 'Unknown')}, Year: {year}")
         
         return show_data
         
@@ -498,8 +652,16 @@ def scrape_shows_for_year(driver, year, conn=None):
     print(f"Scraping shows for year {year}")
     print(f"{'='*60}")
     
+    # Log year processing start
+    if conn:
+        log_import_activity(conn, 'scrape_shows_by_year.py', action='PROCESS_YEAR_START', 
+                          additional_info=f'Year: {year}')
+    
     if not select_year(driver, year):
         print(f"  [ERROR] Failed to select year {year}, skipping...")
+        if conn:
+            log_import_activity(conn, 'scrape_shows_by_year.py', action='ERROR', 
+                              error_detail=f'Failed to select year {year}')
         return []
     
     shows = []
@@ -546,9 +708,15 @@ def scrape_shows_for_year(driver, year, conn=None):
         
         if not grid:
             print(f"  [ERROR] Could not find grid for year {year}")
+            if conn:
+                log_import_activity(conn, 'scrape_shows_by_year.py', action='ERROR', 
+                                  error_detail=f'Could not find grid for year {year}')
             return []
         
         print(f"  Found grid, extracting rows...")
+        if conn:
+            log_import_activity(conn, 'scrape_shows_by_year.py', action='GRID_FOUND', 
+                              additional_info=f'Year: {year}')
         
         # Find all data rows (skip header and filter rows)
         # DevExpress GridView data rows typically have ID containing 'DataRow'
@@ -566,10 +734,16 @@ def scrape_shows_for_year(driver, year, conn=None):
                     rows.append(r)
         
         print(f"  Found {len(rows)} data rows")
+        if conn:
+            log_import_activity(conn, 'scrape_shows_by_year.py', action='GRID_ROWS_FOUND', 
+                              additional_info=f'Year: {year}, Rows found: {len(rows)}')
         
         # Determine column indices from header
         column_map = get_column_indices(grid)
         print(f"  Column mapping: {column_map}")
+        if conn:
+            log_import_activity(conn, 'scrape_shows_by_year.py', action='COLUMN_MAPPING', 
+                              additional_info=f'Year: {year}, Column mapping: {column_map}')
         
         # Debug: print first row structure if rows found
         if rows and len(rows) > 0:
@@ -587,6 +761,32 @@ def scrape_shows_for_year(driver, year, conn=None):
         total_rows = len(rows)
         row_idx = 1  # 1-based index for display
         
+        # Read every row's ShowGUID straight from the grid's client-side row keys so
+        # rows we already know can be upserted without a click/back round trip.
+        # GetRowKey() is per-page; the length check below is what makes that safe -
+        # if the grid ever starts paging, len(grid_keys) won't match total_rows and
+        # the whole year falls back to clicking each row.
+        grid_keys = get_grid_row_keys(driver, grid)
+        known_guids = set()
+        
+        if grid_keys is None:
+            print(f"  [NOTE] Grid row keys unavailable; clicking every row for year {year}")
+        elif len(grid_keys) != total_rows:
+            print(f"  [NOTE] Row key count ({len(grid_keys)}) != row count ({total_rows}); "
+                  f"clicking every row for year {year}")
+            if conn:
+                log_import_activity(conn, 'scrape_shows_by_year.py', action='ROWKEY_MISMATCH',
+                                  additional_info=f'Year: {year}, Keys: {len(grid_keys)}, Rows: {total_rows}')
+            grid_keys = None
+        else:
+            known_guids = get_known_show_guids(conn, year)
+            expected_skips = sum(1 for k in grid_keys if k and k in known_guids)
+            print(f"  Read {len(grid_keys)} grid row keys; {len(known_guids)} ShowGUIDs already "
+                  f"on file for {year} ({expected_skips} rows can skip the click)")
+        
+        skipped_count = 0
+        clicked_count = 0
+        
         while row_idx <= total_rows:
             try:
                 print(f"  Processing row {row_idx}/{total_rows}...")
@@ -598,6 +798,13 @@ def scrape_shows_for_year(driver, year, conn=None):
                     if len(rows) != total_rows:
                         total_rows = len(rows)
                         print(f"    [NOTE] Row count updated to {total_rows}")
+                    
+                    # Re-checked every iteration, not just when the count changes: a key
+                    # array that no longer matches the grid must never be indexed into.
+                    if grid_keys is not None and len(grid_keys) != len(rows):
+                        print(f"    [NOTE] Row keys ({len(grid_keys)}) no longer align with the "
+                              f"grid ({len(rows)}); clicking remaining rows")
+                        grid_keys = None
                     
                     # Get the current row (convert to 0-based index)
                     if row_idx > len(rows):
@@ -611,9 +818,29 @@ def scrape_shows_for_year(driver, year, conn=None):
                     row_idx += 1
                     continue
                 
-                show_data = extract_show_data_from_row(row, driver, driver.current_url, column_map, year, conn)
+                row_key = grid_keys[row_idx - 1] if grid_keys is not None else ''
+                
+                show_data = None
+                navigated = False
+                if row_key and row_key in known_guids:
+                    show_data = extract_show_data_from_known_row(row, column_map, year, row_key, conn)
+                    if show_data:
+                        skipped_count += 1
+                
+                if not show_data:
+                    show_data = extract_show_data_from_row(row, driver, driver.current_url, column_map, year, conn)
+                    navigated = True
+                    clicked_count += 1
+                    # The click navigated away and back, re-rendering the grid, so the key
+                    # array has to be re-read before it is trusted for later rows.
+                    if grid_keys is not None:
+                        grid_keys = get_grid_row_keys(driver)
+                        if grid_keys is None:
+                            print(f"    [NOTE] Row keys unavailable after navigation; "
+                                  f"clicking remaining rows")
+                
                 if show_data:
-                    # Year is already set in extract_show_data_from_row before saving
+                    # Year is already set before saving
                     shows.append(show_data)
                     
                     # Report the data as we collect it
@@ -624,12 +851,16 @@ def scrape_shows_for_year(driver, year, conn=None):
                     print(f"      ShowGUID: {show_data.get('ShowGUID', 'N/A')}")
                     if conn:
                         print(f"      [DB] Saved to database")
+                        log_import_activity(conn, 'scrape_shows_by_year.py', action='EXTRACT_SHOW', 
+                                          target_table='ShowList',
+                                          additional_info=f'Year: {year}, Show: {show_data.get("Show Name", "N/A")[:50]}, ShowGUID: {show_data.get("ShowGUID", "N/A")}, Row {row_idx}/{total_rows}')
                 
                 # Move to next row
                 row_idx += 1
                 
-                # Small delay between rows
-                time.sleep(0.5)
+                # Only pace ourselves when the row actually hit the site
+                if navigated:
+                    time.sleep(0.5)
                 
             except StaleElementReferenceException:
                 print(f"    [WARNING] Stale element for row {row_idx}, will re-find on next iteration...")
@@ -643,6 +874,15 @@ def scrape_shows_for_year(driver, year, conn=None):
                 continue
         
         print(f"  [OK] Extracted {len(shows)} shows for year {year}")
+        print(f"  [SUMMARY] Year {year}: {total_rows} rows, {skipped_count} upserted from known "
+              f"ShowGUIDs (no click), {clicked_count} clicked to resolve a ShowGUID")
+        
+        # Log year processing completion
+        if conn:
+            log_import_activity(conn, 'scrape_shows_by_year.py', action='PROCESS_YEAR_COMPLETE', 
+                              target_table='ShowList', row_count=len(shows),
+                              additional_info=f'Year: {year}, Shows extracted: {len(shows)}, '
+                                              f'Skipped click via known ShowGUID: {skipped_count}, Clicked: {clicked_count}')
         
     except Exception as e:
         print(f"  [ERROR] Error scraping year {year}: {e}")
@@ -688,6 +928,84 @@ def get_db_connection():
                 print(f"[ERROR] Database connection failed with all drivers: {e}")
                 raise
             continue
+
+def create_importlog_table_if_not_exists(conn):
+    """Create the ImportLog table if it doesn't exist"""
+    try:
+        cursor = conn.cursor()
+        
+        # Check if table exists
+        cursor.execute("""
+            SELECT COUNT(*) 
+            FROM INFORMATION_SCHEMA.TABLES 
+            WHERE TABLE_SCHEMA = 'sResults' AND TABLE_NAME = 'ImportLog'
+        """)
+        table_exists = cursor.fetchone()[0] > 0
+        
+        if not table_exists:
+            print("Creating sResults.ImportLog table...")
+            cursor.execute("""
+                CREATE TABLE sResults.ImportLog (
+                    ID INT IDENTITY(1,1) PRIMARY KEY,
+                    LogTimestamp DATETIME DEFAULT GETDATE(),
+                    OriginatingScript NVARCHAR(200) NOT NULL,
+                    TargetTable NVARCHAR(200),
+                    Action NVARCHAR(100) NOT NULL,
+                    [RowCount] INT,
+                    ErrorDetail NVARCHAR(MAX),
+                    AdditionalInfo NVARCHAR(MAX)
+                )
+            """)
+            
+            # Create indexes
+            cursor.execute("CREATE INDEX IX_ImportLog_Timestamp ON sResults.ImportLog(LogTimestamp)")
+            cursor.execute("CREATE INDEX IX_ImportLog_Script ON sResults.ImportLog(OriginatingScript)")
+            cursor.execute("CREATE INDEX IX_ImportLog_TargetTable ON sResults.ImportLog(TargetTable)")
+            
+            conn.commit()
+            print("[OK] ImportLog table created successfully")
+        else:
+            print("[OK] ImportLog table already exists")
+        
+        cursor.close()
+    except Exception as e:
+        print(f"[ERROR] Error creating ImportLog table: {e}")
+        raise
+
+def log_import_activity(conn, script_name, target_table=None, action='', row_count=None, error_detail=None, additional_info=None):
+    """Log import activity to ImportLog table
+    
+    Args:
+        conn: Database connection
+        script_name: Name of the originating script (e.g., 'scrape_shows_by_year.py')
+        target_table: Target table name (e.g., 'ShowList')
+        action: Action description (e.g., 'INSERT', 'UPDATE', 'START', 'COMPLETE', 'ERROR')
+        row_count: Number of rows affected
+        error_detail: Error message if any
+        additional_info: Additional information (JSON string or text)
+    """
+    if not conn:
+        return
+    
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO sResults.ImportLog 
+            (OriginatingScript, TargetTable, Action, [RowCount], ErrorDetail, AdditionalInfo)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """,
+            script_name,
+            target_table,
+            action,
+            row_count,
+            error_detail,
+            additional_info
+        )
+        conn.commit()
+        cursor.close()
+    except Exception as e:
+        # Don't raise - logging failures shouldn't break the main process
+        print(f"[WARNING] Failed to log import activity: {e}")
 
 def create_table_if_not_exists(conn):
     """Create the ShowList table if it doesn't exist"""
@@ -921,6 +1239,7 @@ def main(years_arg=None):
     
     driver = None
     all_shows = []
+    conn = None
     
     try:
         # Setup driver
@@ -934,15 +1253,19 @@ def main(years_arg=None):
         time.sleep(3)
         
         # Connect to database and create table BEFORE scraping starts
-        conn = None
         try:
             print("Connecting to database...")
             conn = get_db_connection()
             print("[OK] Connected to database")
             
             print("Ensuring database tables exist...")
+            create_importlog_table_if_not_exists(conn)
             create_table_if_not_exists(conn)
             print("[OK] Database tables verified/created")
+            
+            # Log script start
+            log_import_activity(conn, 'scrape_shows_by_year.py', action='START', 
+                              additional_info=f'Years: {years_str}, Total years: {len(years)}')
         except Exception as e:
             print(f"[WARNING] Could not connect to database: {e}")
             print("Will save to CSV only")
@@ -958,23 +1281,33 @@ def main(years_arg=None):
             return
         
         # Scrape each year (saves to database as each show is captured)
-        for year in years:
+        for year_idx, year in enumerate(years, 1):
             shows = scrape_shows_for_year(driver, year, conn)
             all_shows.extend(shows)
             
             # Report progress
             print(f"\n[PROGRESS] Total shows collected so far: {len(all_shows)}")
+            if conn:
+                log_import_activity(conn, 'scrape_shows_by_year.py', action='YEAR_PROGRESS', 
+                                  additional_info=f'Year {year_idx}/{len(years)}: {year}, Shows this year: {len(shows)}, Total so far: {len(all_shows)}')
             
             # Small delay between years
             time.sleep(2)
+        
+        # Log completion while the connection is still open
+        if conn:
+            summary_info = ', '.join([f"{year}: {len([s for s in all_shows if s.get('Year') == year])}" for year in years])
+            log_import_activity(conn, 'scrape_shows_by_year.py', action='COMPLETE', 
+                              row_count=len(all_shows), additional_info=f'Total shows: {len(all_shows)}, Summary: {summary_info}')
         
         # Close database connection
         if conn:
             try:
                 conn.close()
-                print("[OK] Database connection closed")
             except:
                 pass
+            conn = None
+            print("[OK] Database connection closed")
         
         # Final summary
         print(f"\n{'='*60}")
@@ -989,6 +1322,9 @@ def main(years_arg=None):
         
     except KeyboardInterrupt:
         print("\n\n[WARNING] Scraping interrupted by user")
+        if conn:
+            log_import_activity(conn, 'scrape_shows_by_year.py', action='INTERRUPTED', 
+                              error_detail='User interrupted scraping', row_count=len(all_shows) if all_shows else 0)
         # Explicitly terminate browser on interrupt
         if driver:
             try:
@@ -1015,6 +1351,11 @@ def main(years_arg=None):
     except Exception as e:
         print(f"\n[ERROR] Fatal Error: {e}")
         import traceback
+        error_trace = traceback.format_exc()
+        if conn:
+            log_import_activity(conn, 'scrape_shows_by_year.py', action='ERROR', 
+                              error_detail=str(e), additional_info=error_trace[:4000],
+                              row_count=len(all_shows) if all_shows else 0)
         traceback.print_exc()
         if all_shows:
             # Try to save to database

@@ -17,7 +17,7 @@ SELECT [ID]
       ,[UpdatedDate]
   FROM [HorseShows].[sResults].[ShowResults]
 
-  select * from [sResults].[vwResults]
+  select * from [sResults].[vwResults] (NOLOCK)
   --WHERE Year IN (2025,2026)
   --WHERE ShowName='2025 IASPHA FALL HORSE SHOW' AND Year=2025
   --WHERE ClassName LIKE 'WARM UP 2% (SPECIAL HUNTERS ONLY)'

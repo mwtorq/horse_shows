@@ -1,6 +1,6 @@
 CREATE OR ALTER VIEW [sResults].[vwResults] AS
 
-  SELECT TOP 10000000 s.[Year]
+  SELECT TOP 100000000 s.[Year]
       ,s.[ShowName]
       ,s.[StartDate]
       ,s.[EndDate]
@@ -12,7 +12,8 @@ CREATE OR ALTER VIEW [sResults].[vwResults] AS
       ,CASE WHEN cl.[DivisionName] IS NULL THEN 'No classes loaded' ELSE cl.[DivisionName] END AS DivisionName
       ,CASE WHEN r.[Entry] IS NULL THEN 'No entries' ELSE r.[Entry] END AS Entry
       ,CASE WHEN r.[Start] IS NULL THEN 'No entries' ELSE r.[Start] END AS Start
-      ,CASE WHEN r.[Place] IS NULL THEN 'No entries' ELSE CASE WHEN CAST(r.[Place] AS VARCHAR(10))='0' THEN 'DNP' ELSE CAST(r.[Place] AS VARCHAR(10)) END + ' out of ' + CAST(cl.[Entries] AS VARCHAR(10)) END AS Place
+      ,CASE WHEN r.[Place] IS NULL THEN 'No entries' ELSE CASE WHEN CAST(r.[Place] AS VARCHAR(10))='0' THEN 'DNP' ELSE CASE WHEN CAST(r.[Place] AS VARCHAR(10))='1' AND (cl.[ClassName] LIKE '%Champion%' OR cl.[ClassName] LIKE '%Challenge%' OR cl.[ClassName] LIKE '%Stake%') THEN 'Champion' WHEN CAST(r.[Place] AS VARCHAR(10))='2' AND (cl.[ClassName] LIKE '%Champion%' OR cl.[ClassName] LIKE '%Challenge%' OR cl.[ClassName] LIKE '%Stake%') THEN 'Reserve' ELSE CAST(r.[Place] AS VARCHAR(10)) END END + ' out of ' + CAST(cl.[Entries] AS VARCHAR(10)) END AS Place
+      ,CASE WHEN r.[Place] IS NULL THEN 'No entries' ELSE CASE WHEN CAST(r.[Place] AS VARCHAR(10))='0' THEN 'DNP' ELSE CASE WHEN CAST(r.[Place] AS VARCHAR(10))='1' AND (cl.[ClassName] LIKE '%Champion%' OR cl.[ClassName] LIKE '%Challenge%' OR cl.[ClassName] LIKE '%Stake%') THEN 'Champion' WHEN CAST(r.[Place] AS VARCHAR(10))='2' AND (cl.[ClassName] LIKE '%Champion%' OR cl.[ClassName] LIKE '%Challenge%' OR cl.[ClassName] LIKE '%Stake%') THEN 'Reserve' ELSE CAST(r.[Place] AS VARCHAR(10)) END END END AS PlaceNum
       ,CASE WHEN c.[Rider] IS NULL THEN 'No entries' ELSE c.[Rider] + CASE WHEN c.[RiderUSEFID] IS NOT NULL THEN ' (' + c.[RiderUSEFID] + ')' ELSE '' END END AS Rider
       ,CASE WHEN h.[HorseName] IS NULL THEN 'No entries' ELSE h.[HorseName] END AS HorseName
       ,CASE WHEN o.[Owner] IS NULL THEN 'No entries' ELSE o.[Owner] END AS Owner
@@ -23,13 +24,13 @@ CREATE OR ALTER VIEW [sResults].[vwResults] AS
   --FROM [HorseShows].[sResults].[ShowResults] r
   --JOIN [HorseShows].[sResults].[ShowClass] cl ON r.ShowClassID=cl.ID
   --JOIN [HorseShows].[sResults].[ShowList] s ON cl.ShowListID=s.ID
-  FROM [HorseShows].[sResults].[ShowList] s
-  LEFT JOIN [HorseShows].[sResults].[ShowClass] cl ON s.ID=cl.ShowListID
-  LEFT JOIN [HorseShows].[sResults].[ShowResults] r ON cl.ID=r.ShowClassID
-  LEFT JOIN [HorseShows].[sResults].[Horse] h ON r.HorseID=h.ID
-  LEFT JOIN [HorseShows].[sResults].[Competitors] c ON r.RiderID=c.ID
-  LEFT JOIN [HorseShows].[sResults].[Competitors] o ON h.OwnerID=o.ID
-  LEFT JOIN [HorseShows].[sResults].[Competitors] tr ON r.TrainerID=tr.ID
+  FROM [HorseShows].[sResults].[ShowList] s (NOLOCK)
+  LEFT JOIN [HorseShows].[sResults].[ShowClass] cl (NOLOCK) ON s.ID=cl.ShowListID
+  LEFT JOIN [HorseShows].[sResults].[ShowResults] r (NOLOCK) ON cl.ID=r.ShowClassID
+  LEFT JOIN [HorseShows].[sResults].[Horse] h (NOLOCK) ON r.HorseID=h.ID
+  LEFT JOIN [HorseShows].[sResults].[Competitors] c (NOLOCK) ON r.RiderID=c.ID
+  LEFT JOIN [HorseShows].[sResults].[Competitors] o (NOLOCK) ON h.OwnerID=o.ID
+  LEFT JOIN [HorseShows].[sResults].[Competitors] tr (NOLOCK) ON r.TrainerID=tr.ID
   --ORDER BY CAST(s.StartDate AS DATE) DESC,s.ShowName,CASE WHEN LEN(cl.Class)=1 THEN '00000' + cl.Class WHEN LEN(cl.Class)=2 THEN '0000' + cl.Class WHEN LEN(cl.Class)=3 THEN '000' + cl.Class WHEN LEN(cl.Class)=4 THEN '00' + cl.Class WHEN LEN(cl.Class)=5 THEN '0' + cl.Class ELSE cl.Class END,r.Place
   ORDER BY CAST(s.StartDate AS DATE) DESC,s.ShowName,
     -- First, categorize: 0 = pure number, 1 = prefix+number(+suffix), 2 = pure string
