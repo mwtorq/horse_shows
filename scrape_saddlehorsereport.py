@@ -612,6 +612,27 @@ def ensure_schema(conn) -> None:
         """
         IF NOT EXISTS (
             SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA='sResults' AND TABLE_NAME='ShowList' AND COLUMN_NAME='HPSLabel'
+        )
+        ALTER TABLE sResults.ShowList ADD HPSLabel NVARCHAR(100) NULL;
+        """,
+        """
+        IF NOT EXISTS (
+            SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA='sResults' AND TABLE_NAME='ShowList' AND COLUMN_NAME='HPSMultiplier'
+        )
+        ALTER TABLE sResults.ShowList ADD HPSMultiplier TINYINT NULL;
+        """,
+        """
+        IF NOT EXISTS (
+            SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA='sResults' AND TABLE_NAME='ShowClass' AND COLUMN_NAME='HPSCategory'
+        )
+        ALTER TABLE sResults.ShowClass ADD HPSCategory NVARCHAR(200) NULL;
+        """,
+        """
+        IF NOT EXISTS (
+            SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
             WHERE TABLE_SCHEMA='sResults' AND TABLE_NAME='Horse' AND COLUMN_NAME='BroodmareSire'
         )
         ALTER TABLE sResults.Horse ADD BroodmareSire NVARCHAR(200) NULL;
@@ -919,6 +940,46 @@ def collect_shows_for_year(driver, year: int, year_url: str) -> List[Dict[str, s
     return shows
 
 
+def parse_hps_from_text(*texts: Optional[str]) -> Dict[str, Any]:
+    """Extract show-level HPS badge: Single/Double/Triple/Quadruple HPS Points Show."""
+    joined = "\n".join(t for t in texts if t)
+    out: Dict[str, Any] = {"hps_label": None, "hps_multiplier": None}
+    if not joined:
+        return out
+    m = re.search(
+        r"\(\s*((Single|Double|Triple|Quadruple)\s+HPS\s+Points\s+Show)\s*\)",
+        joined,
+        re.I,
+    )
+    if not m:
+        m = re.search(
+            r"\b((Single|Double|Triple|Quadruple)\s+HPS\s+Points\s+Show)\b",
+            joined,
+            re.I,
+        )
+    if not m:
+        return out
+    mult_word = m.group(2) or ""
+    mult_map = {"single": 1, "double": 2, "triple": 3, "quadruple": 4}
+    label = f"{mult_word[0].upper()}{mult_word[1:].lower()} HPS Points Show"
+    out["hps_label"] = label
+    out["hps_multiplier"] = mult_map.get(mult_word.lower())
+    return out
+
+
+def strip_hps_from_show_name(show_name: str) -> str:
+    """Remove trailing/embedded HPS Points Show parenthetical from a show title."""
+    if not show_name:
+        return show_name
+    cleaned = re.sub(
+        r"\s*\(\s*(Single|Double|Triple|Quadruple)\s+HPS\s+Points\s+Show\s*\)\s*",
+        " ",
+        show_name,
+        flags=re.I,
+    )
+    return re.sub(r"\s+", " ", cleaned).strip(" -|,")
+
+
 def parse_show_meta(soup: BeautifulSoup) -> Dict[str, Any]:
     text = soup.get_text("\n", strip=True)
     info: Dict[str, Any] = {
@@ -928,6 +989,8 @@ def parse_show_meta(soup: BeautifulSoup) -> Dict[str, Any]:
         "show_date": "",
         "year": None,
         "judges": [],
+        "hps_label": None,
+        "hps_multiplier": None,
     }
     h1 = soup.find(["h1", "h2"])
     # Title often in page title: "Monarch ... Show Results |"
@@ -935,6 +998,10 @@ def parse_show_meta(soup: BeautifulSoup) -> Dict[str, Any]:
     m = re.match(r"(.+?)\s+Show Results", title)
     if m:
         info["show_name"] = m.group(1).strip()
+    if not info["show_name"]:
+        m = re.match(r"(.+?)\s+-\s+\d{4}\s+Judges Card", title, re.I)
+        if m:
+            info["show_name"] = m.group(1).strip()
     loc = re.search(r"Location:\s*(.+)", text)
     if loc:
         loc_line = loc.group(1).split("\n")[0].strip()
@@ -963,6 +1030,12 @@ def parse_show_meta(soup: BeautifulSoup) -> Dict[str, Any]:
             if t and "judge" not in t.lower() and len(t) > 3:
                 info["show_name"] = t
                 break
+
+    hps = parse_hps_from_text(title, text, info.get("show_name") or "")
+    info["hps_label"] = hps.get("hps_label")
+    info["hps_multiplier"] = hps.get("hps_multiplier")
+    if info.get("show_name"):
+        info["show_name"] = strip_hps_from_show_name(info["show_name"])
     return info
 
 
@@ -1020,6 +1093,46 @@ def normalize_shr_entry_identity(
     }
 
 
+def split_class_name_and_hps_category(header_text: str) -> Tuple[str, Optional[str]]:
+    """Split 'CLASS NAME HPS Category: Foo' into (class_name, hps_category)."""
+    text = (header_text or "").strip()
+    if not text:
+        return "", None
+    m = re.search(r"HPS\s*Category\s*:\s*(.+)$", text, re.I)
+    hps = None
+    if m:
+        hps = re.sub(r"\s+", " ", m.group(1).strip())
+        if hps:
+            hps = hps[:200]
+        else:
+            hps = None
+    name = re.sub(r"\s*HPS\s*Category\s*:?\s*.*$", "", text, flags=re.I).strip()
+    name = re.sub(r"\s+", " ", name).strip()
+    return name, hps
+
+
+def parse_class_hps_headers(soup: BeautifulSoup) -> List[Dict[str, Any]]:
+    """Collect unique class_name + hps_category from SHR class banner rows."""
+    out: List[Dict[str, Any]] = []
+    seen = set()
+    for tr in soup.find_all("tr"):
+        cells = tr.find_all(["td", "th"])
+        if len(cells) != 1:
+            continue
+        text = cells[0].get_text(" ", strip=True)
+        if "hps category" not in text.lower():
+            continue
+        name, hps = split_class_name_and_hps_category(text)
+        if not name or not hps:
+            continue
+        key = (name.lower(), hps.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"class_name": name, "hps_category": hps})
+    return out
+
+
 def parse_results_classes(soup: BeautifulSoup) -> List[Dict[str, Any]]:
     """Parse the big results table: class banner rows + Pl/Horse/Rider/Owner rows."""
     classes: List[Dict[str, Any]] = []
@@ -1036,26 +1149,30 @@ def parse_results_classes(soup: BeautifulSoup) -> List[Dict[str, Any]]:
         joined = " ".join(texts).strip()
         # Class header rows often span and include HPS Category
         if len(cells) == 1 or (len(cells) <= 2 and "HPS Category" in joined):
-            class_name = texts[0]
-            class_name = re.sub(r"\s*HPS Category.*$", "", class_name, flags=re.I).strip()
+            class_name, hps_category = split_class_name_and_hps_category(texts[0])
             if class_name and class_name.upper() not in ("PL", "HORSE", "RIDER", "OWNER"):
                 # Ignore judge-name banner leftovers like "PL Tammie Conatser..."
                 if class_name.upper().startswith("PL "):
                     current = None
                     accepting_entries = False
                     continue
-                current = {"class_name": class_name, "class_number": None, "entries": []}
+                current = {
+                    "class_name": class_name,
+                    "hps_category": hps_category,
+                    "class_number": None,
+                    "entries": [],
+                }
                 classes.append(current)
                 accepting_entries = False
             continue
         upper = [t.upper() for t in texts]
-        # Official placing header â€” only then accept Horse/Rider/Owner rows
+        # Official placing header — only then accept Horse/Rider/Owner rows
         if texts[:4] == ["Pl", "Horse", "Rider", "Owner"] or (
             len(texts) >= 4 and upper[0] == "PL" and "HORSE" in upper and "RIDER" in upper
         ):
             accepting_entries = bool(current)
             continue
-        # Judge-card ranking header (PL | judges... | Final) â€” do not treat as entries
+        # Judge-card ranking header (PL | judges... | Final) — do not treat as entries
         if (
             len(texts) >= 3
             and upper[0] == "PL"
@@ -1159,6 +1276,7 @@ def parse_judge_card_classes(soup: BeautifulSoup) -> List[Dict[str, Any]]:
     """
     classes: List[Dict[str, Any]] = []
     last_class_name = ""
+    last_hps_category: Optional[str] = None
 
     def is_ranking_header(cells: List[str]) -> bool:
         if len(cells) < 3 or len(cells) > 12:
@@ -1168,7 +1286,9 @@ def parse_judge_card_classes(soup: BeautifulSoup) -> List[Dict[str, Any]]:
         judges = cells[1:-1]
         return bool(judges) and all(j and not re.fullmatch(r"\d+", j) for j in judges)
 
-    def consume_ranking(rows, header_idx: int, class_name: str) -> None:
+    def consume_ranking(
+        rows, header_idx: int, class_name: str, hps_category: Optional[str] = None
+    ) -> None:
         cells = [c.get_text(" ", strip=True) for c in rows[header_idx].find_all(["td", "th"])]
         judges = cells[1:-1]
         cards = []
@@ -1207,7 +1327,13 @@ def parse_judge_card_classes(soup: BeautifulSoup) -> List[Dict[str, Any]]:
                     }
                 )
         if class_name and cards:
-            classes.append({"class_name": class_name, "cards": cards})
+            classes.append(
+                {
+                    "class_name": class_name,
+                    "hps_category": hps_category,
+                    "cards": cards,
+                }
+            )
 
     # Prefer the outermost large results table; fall back to all tables.
     top_tables = [t for t in soup.find_all("table") if not t.find_parent("table")]
@@ -1219,13 +1345,14 @@ def parse_judge_card_classes(soup: BeautifulSoup) -> List[Dict[str, Any]]:
         while i < len(rows):
             cells = [c.get_text(" ", strip=True) for c in rows[i].find_all(["td", "th"])]
             if len(cells) == 1:
-                name = re.sub(r"\s*HPS Category.*$", "", cells[0], flags=re.I).strip()
+                name, hps = split_class_name_and_hps_category(cells[0])
                 if name and not name.upper().startswith("PL "):
                     last_class_name = name
+                    last_hps_category = hps
                 i += 1
                 continue
             if is_ranking_header(cells):
-                consume_ranking(rows, i, last_class_name)
+                consume_ranking(rows, i, last_class_name, last_hps_category)
                 # advance past this block
                 i += 1
                 while i < len(rows):
@@ -1308,13 +1435,17 @@ def find_or_insert_show(
     location: str,
     state: str,
     shr_id: str,
+    hps_label: Optional[str] = None,
+    hps_multiplier: Optional[int] = None,
 ) -> int:
     cursor = conn.cursor()
     try:
         cursor.execute("SELECT ID FROM sResults.ShowList WHERE SHRShowID = ?", shr_id)
         row = cursor.fetchone()
         if row:
-            return row[0]
+            show_id = int(row[0])
+            update_show_hps(conn, show_id, hps_label, hps_multiplier)
+            return show_id
 
         match = find_best_hso_show_match(
             conn,
@@ -1335,6 +1466,8 @@ def find_or_insert_show(
                     ShowLocation = COALESCE(NULLIF(ShowLocation, ''), ?),
                     ShowDate = COALESCE(NULLIF(ShowDate, ''), ?),
                     StateProv = COALESCE(NULLIF(StateProv, ''), ?),
+                    HPSLabel = COALESCE(?, HPSLabel),
+                    HPSMultiplier = COALESCE(?, HPSMultiplier),
                     UpdatedDate = GETDATE()
                 WHERE ID = ?
                 """,
@@ -1342,6 +1475,8 @@ def find_or_insert_show(
                 location or None,
                 show_date or None,
                 state_abbr,  # abbreviation only; never write SHR full name onto HSO
+                hps_label,
+                hps_multiplier,
                 best_id,
             )
             conn.commit()
@@ -1357,9 +1492,10 @@ def find_or_insert_show(
         cursor.execute(
             """
             INSERT INTO sResults.ShowList
-                (Year, ShowName, ShowDate, ShowLocation, StateProv, GoverningBody, SHRShowID)
+                (Year, ShowName, ShowDate, ShowLocation, StateProv, GoverningBody,
+                 SHRShowID, HPSLabel, HPSMultiplier)
             OUTPUT INSERTED.ID
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             year,
             show_name[:500],
@@ -1368,19 +1504,55 @@ def find_or_insert_show(
             state or None,
             "SHR",
             shr_id,
+            hps_label,
+            hps_multiplier,
         )
         new_id = cursor.fetchone()[0]
         conn.commit()
         print_with_timestamp(f"  Inserted ShowList ID={new_id} '{show_name}'")
-        return new_id
+        return int(new_id)
     finally:
         cursor.close()
 
 
-def find_or_insert_class(conn, show_list_id: int, class_name: str) -> int:
+def update_show_hps(
+    conn,
+    show_list_id: int,
+    hps_label: Optional[str],
+    hps_multiplier: Optional[int],
+) -> None:
+    """Set ShowList HPS fields when we have a value (does not clear existing)."""
+    if not hps_label and hps_multiplier is None:
+        return
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            UPDATE sResults.ShowList
+            SET HPSLabel = COALESCE(?, HPSLabel),
+                HPSMultiplier = COALESCE(?, HPSMultiplier),
+                UpdatedDate = GETDATE()
+            WHERE ID = ?
+            """,
+            hps_label,
+            hps_multiplier,
+            show_list_id,
+        )
+        conn.commit()
+    finally:
+        cursor.close()
+
+
+def find_or_insert_class(
+    conn,
+    show_list_id: int,
+    class_name: str,
+    hps_category: Optional[str] = None,
+) -> int:
     cursor = conn.cursor()
     try:
         class_name = (class_name or "").strip()
+        hps_category = (hps_category or "").strip() or None
         cursor.execute(
             """
             SELECT ID FROM sResults.ShowClass
@@ -1391,7 +1563,9 @@ def find_or_insert_class(conn, show_list_id: int, class_name: str) -> int:
         )
         row = cursor.fetchone()
         if row:
-            return row[0]
+            class_id = int(row[0])
+            update_class_hps_category(conn, class_id, hps_category)
+            return class_id
         cursor.execute(
             "SELECT ID, Class, ClassName FROM sResults.ShowClass WHERE ShowListID = ?",
             show_list_id,
@@ -1404,19 +1578,44 @@ def find_or_insert_class(conn, show_list_id: int, class_name: str) -> int:
         # Only fuzzy-match when names are nearly identical; prefer insert otherwise
         # so distinct SHR classes are not collapsed (which duplicates Place values).
         if best_id and best_score >= 0.97:
-            return best_id
+            update_class_hps_category(conn, int(best_id), hps_category)
+            return int(best_id)
         cursor.execute(
             """
-            INSERT INTO sResults.ShowClass (ShowListID, Class, ClassName, Entries, Placings)
-            OUTPUT INSERTED.ID VALUES (?, '', ?, 0, 0)
+            INSERT INTO sResults.ShowClass
+                (ShowListID, Class, ClassName, Entries, Placings, HPSCategory)
+            OUTPUT INSERTED.ID VALUES (?, '', ?, 0, 0, ?)
             """,
             show_list_id,
             class_name[:500],
+            hps_category,
         )
         new_id = cursor.fetchone()[0]
         conn.commit()
         print_with_timestamp(f"    Inserted ShowClass ID={new_id} '{class_name}'")
-        return new_id
+        return int(new_id)
+    finally:
+        cursor.close()
+
+
+def update_class_hps_category(
+    conn, show_class_id: int, hps_category: Optional[str]
+) -> None:
+    """Set ShowClass.HPSCategory when provided (does not clear existing)."""
+    if not hps_category:
+        return
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            UPDATE sResults.ShowClass
+            SET HPSCategory = COALESCE(?, HPSCategory)
+            WHERE ID = ?
+            """,
+            hps_category[:200],
+            show_class_id,
+        )
+        conn.commit()
     finally:
         cursor.close()
 
@@ -1803,12 +2002,19 @@ def process_show_results(driver, conn, show: Dict[str, str], horse_cache: Dict[s
         location=meta.get("location") or "",
         state=meta.get("state") or "",
         shr_id=sid,
+        hps_label=meta.get("hps_label"),
+        hps_multiplier=meta.get("hps_multiplier"),
     )
     judge_map = upsert_judges(conn, show_list_id, meta.get("judges") or [])
     classes = parse_results_classes(soup)
     print_with_timestamp(f"  classes={len(classes)} judges={len(judge_map)}")
     for cls in classes:
-        class_id = find_or_insert_class(conn, show_list_id, cls["class_name"])
+        class_id = find_or_insert_class(
+            conn,
+            show_list_id,
+            cls["class_name"],
+            hps_category=cls.get("hps_category"),
+        )
         for entry in cls.get("entries") or []:
             details: Dict[str, Optional[str]] = {"owner": entry.get("owner")}
             horse_url = entry.get("horse_url")
@@ -1889,12 +2095,19 @@ def process_judge_cards(driver, conn, show: Dict[str, str]) -> None:
         location=meta.get("location") or "",
         state=meta.get("state") or "",
         shr_id=sid,
+        hps_label=meta.get("hps_label"),
+        hps_multiplier=meta.get("hps_multiplier"),
     )
     judge_map = upsert_judges(conn, show_list_id, meta.get("judges") or [])
     class_cards = parse_judge_card_classes(soup)
     print_with_timestamp(f"  judge-card class blocks={len(class_cards)}")
     for block in class_cards:
-        class_id = find_or_insert_class(conn, show_list_id, block["class_name"])
+        class_id = find_or_insert_class(
+            conn,
+            show_list_id,
+            block["class_name"],
+            hps_category=block.get("hps_category"),
+        )
         for card in block["cards"]:
             jname = card["judge_name"]
             if jname not in judge_map:

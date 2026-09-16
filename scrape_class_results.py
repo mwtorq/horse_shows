@@ -19,9 +19,17 @@ import time
 import pyodbc
 import getpass
 import socket
+import os
+import threading
+import subprocess
 from datetime import datetime
 
 from hso_archive import save_hso_driver_page, save_hso_page
+
+# Verbose DEBUG lines flood the Cursor terminal pipe and can block forever on print().
+HSO_VERBOSE = os.environ.get("HSO_VERBOSE", "").strip().lower() in ("1", "true", "yes")
+# Soft-recycle Chrome after this many successful classdetail rows within a show.
+HSO_RECYCLE_EVERY_N_ROWS = int(os.environ.get("HSO_RECYCLE_EVERY_N_ROWS", "20"))
 
 def print_with_timestamp(message, end='\n'):
     """Print message with timestamp prefix
@@ -42,9 +50,82 @@ def print_with_timestamp(message, end='\n'):
         print('\n' * leading_newlines, end='')
         # Print timestamp and remaining message (without leading newlines)
         remaining_message = message[leading_newlines:]
-        print(f"[{timestamp}] {remaining_message}", end=end)
+        print(f"[{timestamp}] {remaining_message}", end=end, flush=True)
     else:
-        print(f"[{timestamp}] {message}", end=end)
+        print(f"[{timestamp}] {message}", end=end, flush=True)
+
+
+def debug_log(message: str) -> None:
+    """Optional verbose diagnostics — off by default to avoid terminal pipe stalls."""
+    if HSO_VERBOSE:
+        print_with_timestamp(message)
+
+
+def force_kill_chromedriver(driver=None) -> None:
+    """Hard-kill a wedged ChromeDriver/Chrome session (Windows-safe)."""
+    try:
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/IM", "chromedriver.exe", "/T"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except Exception:
+        pass
+
+
+def run_with_watchdog(fn, timeout_sec: float, label: str = "driver call"):
+    """Run fn in a daemon thread; if it exceeds timeout_sec, raise TimeoutError.
+
+    Selenium's own script timeout often never fires once chromedriver is wedged.
+    Caller must force-kill + reconnect after TimeoutError.
+    """
+    box = {"result": None, "error": None, "done": False}
+
+    def worker():
+        try:
+            box["result"] = fn()
+        except Exception as e:
+            box["error"] = e
+        finally:
+            box["done"] = True
+
+    t = threading.Thread(target=worker, daemon=True, name=f"watchdog-{label[:40]}")
+    t.start()
+    t.join(timeout_sec)
+    if not box["done"]:
+        print_with_timestamp(f"  [WATCHDOG] {label} exceeded {timeout_sec:.0f}s")
+        raise TimeoutError(f"WATCHDOG: {label} timed out after {timeout_sec}s")
+    if box["error"] is not None:
+        raise box["error"]
+    return box["result"]
+
+
+HEARTBEAT_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "merge_rebuild_snapshots",
+    "rebuild_heartbeat.txt",
+)
+
+
+def write_rebuild_heartbeat(message: str) -> None:
+    """Touch a heartbeat file so an outer supervisor can detect stalls."""
+    try:
+        os.makedirs(os.path.dirname(HEARTBEAT_PATH), exist_ok=True)
+        with open(HEARTBEAT_PATH, "w", encoding="utf-8") as f:
+            f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {message}\n")
+    except Exception:
+        pass
+
+
 def reconnect_browser_and_navigate(driver, show_guid, year, show_name, current_url_hint=None, sleep_short=0.3, sleep_medium=0.5, sleep_long=1):
     """Reconnect browser and navigate back to ClassResults page (optimized for speed)
     
@@ -63,14 +144,7 @@ def reconnect_browser_and_navigate(driver, show_guid, year, show_name, current_u
     """
     try:
         print_with_timestamp(f"      [RECONNECT] Disconnecting browser due to stale element errors...")
-        
-        # Close current browser
-        try:
-            driver.quit()
-        except:
-            pass
-        
-        # Minimal wait
+        force_kill_chromedriver(driver)
         time.sleep(sleep_short)
         
         # Create new browser instance
@@ -247,6 +321,8 @@ def setup_driver(headless=True):
     
     try:
         driver = webdriver.Chrome(options=chrome_options)
+        driver.set_script_timeout(90)
+        driver.set_page_load_timeout(60)
         driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
             'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined})'
         })
@@ -859,7 +935,7 @@ def activate_shows_by_year_tab(driver, sleep_medium=0.5, sleep_short=0.2):
                     print_with_timestamp(f"  [OK] Found 'Shows By Year' tab by text")
                     break
         except Exception as e:
-            print_with_timestamp(f"  [DEBUG] Method 1 error: {e}")
+            debug_log(f"  [DEBUG] Method 1 error: {e}")
         
         # Method 2: Try XPath with span
         if not shows_by_year_tab:
@@ -921,7 +997,7 @@ def activate_shows_by_year_tab(driver, sleep_medium=0.5, sleep_short=0.2):
                             return True
                         break
         except Exception as e:
-            print_with_timestamp(f"  [DEBUG] Error checking if tab is active: {e}")
+            debug_log(f"  [DEBUG] Error checking if tab is active: {e}")
         
         # Click the tab (re-find to avoid stale element)
         try:
@@ -1753,7 +1829,7 @@ def get_column_indices_for_class_grid(grid):
         )
         if header_rows:
             header_cells = header_rows[0].find_elements(By.TAG_NAME, "th, td")
-            print_with_timestamp(f"  [DEBUG] Header row has {len(header_cells)} cells")
+            debug_log(f"  [DEBUG] Header row has {len(header_cells)} cells")
             for idx, cell in enumerate(header_cells):
                 cell_text = cell.text.strip()
                 cell_text_lower = cell_text.lower()
@@ -2451,7 +2527,7 @@ def save_show_result_to_database(conn, show_class_id, entry_details, cursor=None
             set_text("AddBack", entry_details.get('AddBack'), cur_addback)
             set_text("Start", entry_details.get('Start'), cur_start)
             set_text("Score", entry_details.get('Score'), cur_score)
-            set_text("Percent", entry_details.get('Percent'), cur_percent)
+            set_text("[Percent]", entry_details.get('Percent'), cur_percent)
             set_text("USEF", entry_details.get('USEF'), cur_usef)
             set_text("EC", entry_details.get('EC'), cur_ec)
 
@@ -3124,7 +3200,7 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
             # Debug: Check what tables are actually on the page
             try:
                 all_tables = driver.find_elements(By.TAG_NAME, "table")
-                print_with_timestamp(f"  [DEBUG] Found {len(all_tables)} tables on page")
+                debug_log(f"  [DEBUG] Found {len(all_tables)} tables on page")
                 for i, table in enumerate(all_tables[:5]):  # Show first 5 tables
                     table_id = table.get_attribute('id') or 'no-id'
                     table_class = table.get_attribute('class') or 'no-class'
@@ -3132,7 +3208,7 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                     tr_count = len(table.find_elements(By.TAG_NAME, "tr"))
                     print_with_timestamp(f"    Table {i+1}: id='{table_id[:60]}...', class='{table_class[:60]}...', displayed={is_displayed}, rows={tr_count}")
             except Exception as e:
-                print_with_timestamp(f"  [DEBUG] Error checking page tables: {e}")
+                debug_log(f"  [DEBUG] Error checking page tables: {e}")
         
         time.sleep(sleep_medium)  # Additional wait for JavaScript to populate grid
         
@@ -3242,9 +3318,9 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                 grid,
             ) or []
             if class_rows:
-                print_with_timestamp(f"  [DEBUG] JS located {len(class_rows)} DXDataRow elements")
+                debug_log(f"  [DEBUG] JS located {len(class_rows)} DXDataRow elements")
         except Exception as js_err:
-            print_with_timestamp(f"  [DEBUG] JS DataRow lookup failed: {js_err}")
+            debug_log(f"  [DEBUG] JS DataRow lookup failed: {js_err}")
             class_rows = []
 
         # Strategy 1: Look for rows with DataRow in ID
@@ -3403,7 +3479,7 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
             # Debug: if no rows found, try to understand the structure
             if len(class_rows) == 0:
                 all_rows = grid.find_elements(By.TAG_NAME, "tr")
-                print_with_timestamp(f"  [DEBUG] Total rows in grid: {len(all_rows)}")
+                debug_log(f"  [DEBUG] Total rows in grid: {len(all_rows)}")
                 if len(all_rows) > 0:
                     # Print first few rows' structure for debugging
                     for i, r in enumerate(all_rows[:10]):
@@ -3415,12 +3491,130 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                             cell_text = cells[0].text[:50] if cells[0].text else 'empty'
                         print_with_timestamp(f"    Row {i+1}: id='{row_id[:60]}', class='{row_class[:60]}', cells={len(cells)}, first_cell='{cell_text}'")
             
-            # PASS 1: Extract all class summary data and save to ShowClass table
+            # PASS 1: Extract all class summary data via one JS pass (Selenium
+            # per-row cell.text / re-find has hung ChromeDriver for hours after
+            # large shows). Archives stay enabled; this only changes summary extract.
             print_with_timestamp(f"\n  PASS 1: Extracting class summaries...")
             class_data_list = []  # Store (row_index, show_class_id, entries) for second pass
             showclass_count = 0  # Track ShowClass records created
-            
-            for row_idx, class_row in enumerate(class_rows, 1):
+
+            js_map = {k: v for k, v in (class_column_map or {}).items() if v is not None}
+            try:
+                js_rows = driver.execute_script(
+                    """
+                    var table = arguments[0];
+                    var colMap = arguments[1] || {};
+                    if (!table) return [];
+                    function cellText(cell) {
+                        if (!cell) return '';
+                        return (cell.innerText || cell.textContent || '').trim();
+                    }
+                    var rows = table.querySelectorAll("tr[id*='DXDataRow'], tr[id*='DataRow']");
+                    var out = [];
+                    for (var i = 0; i < rows.length; i++) {
+                        var row = rows[i];
+                        var id = row.id || '';
+                        if (id.indexOf('HeaderRow') !== -1 || id.indexOf('FilterRow') !== -1) continue;
+                        if (id.indexOf('Detail') !== -1) continue;
+                        if (id.indexOf('grPlacing') !== -1 || id.indexOf('grNonPlacing') !== -1) continue;
+                        var cells = row.querySelectorAll('td');
+                        if (cells.length < 3) continue;
+                        var summary = {};
+                        for (var field in colMap) {
+                            if (!Object.prototype.hasOwnProperty.call(colMap, field)) continue;
+                            var idx = colMap[field];
+                            summary[field] = (idx != null && idx < cells.length) ? cellText(cells[idx]) : '';
+                        }
+                        out.push({rowIndex: out.length + 1, rowId: id, summary: summary, cellCount: cells.length});
+                    }
+                    return out;
+                    """,
+                    grid,
+                    js_map,
+                ) or []
+            except Exception as js_pass1_err:
+                print_with_timestamp(f"  [WARNING] JS class-summary extract failed: {js_pass1_err}")
+                js_rows = []
+
+            if not js_rows:
+                print_with_timestamp("  [WARNING] JS returned 0 class rows; falling back to Selenium PASS 1")
+                js_rows = None
+
+            if js_rows is not None:
+                debug_log(f"  [DEBUG] JS extracted {len(js_rows)} class summary rows")
+                for item in js_rows:
+                    try:
+                        row_idx = item.get("rowIndex") or 0
+                        row_id = item.get("rowId") or ""
+                        class_summary = item.get("summary") or {}
+                        print_with_timestamp(f"  Extracting class row {row_idx}/{len(js_rows)}...")
+
+                        class_text = class_summary.get('Class', '').lower()
+                        class_name_text = class_summary.get('Class Name', '').lower()
+                        combined_text = (class_text + ' ' + class_name_text).lower()
+                        exclude_text = ['copyright', 'all rights reserved', 'privacy policy',
+                                       'terms of service', 'contact', 'version', 'security alerts',
+                                       'horseshowsonline', 'timeslice']
+                        if any(exclude in combined_text for exclude in exclude_text):
+                            print_with_timestamp(f"    Skipping footer row: {class_summary.get('Class', 'N/A')[:50]}")
+                            continue
+
+                        placings = class_summary.get('Placings', '').strip()
+                        if not placings:
+                            placings = '0'
+                        class_summary['Placings'] = placings
+
+                        entries = class_summary.get('Entries', '').strip()
+                        entries_is_numeric = entries.isdigit() if entries else False
+                        has_class = bool(class_summary.get('Class', '').strip())
+                        has_class_name = bool(class_summary.get('Class Name', '').strip())
+                        if not has_class and not has_class_name:
+                            print_with_timestamp(f"    Skipping non-data row (no class info)")
+                            continue
+
+                        entries_int = 0
+                        if entries and entries_is_numeric:
+                            entries_int = int(entries)
+                        elif not entries or entries.strip() == '':
+                            entries = '0'
+                            entries_int = 0
+                            class_summary['Entries'] = '0'
+                        else:
+                            print_with_timestamp(f"    Skipping row with non-numeric Entries: '{entries}'")
+                            continue
+
+                        print_with_timestamp(
+                            f"    Class: {class_summary.get('Class', 'N/A')}, "
+                            f"Class Name: {class_summary.get('Class Name', 'N/A')[:50]}, "
+                            f"Entries: {entries}, Placings: {placings}"
+                        )
+
+                        show_class_id = get_or_create_showclass(conn, show_list_id, class_summary)
+                        if not show_class_id:
+                            print_with_timestamp(f"      [WARNING] Could not create/get ShowClass")
+                            continue
+                        showclass_count += 1
+
+                        placings_int = int(placings) if placings else 0
+                        if placings_int > 0:
+                            class_data_list.append((row_idx, row_id or None, show_class_id, entries))
+                        else:
+                            print_with_timestamp(
+                                f"      Class saved to database (Placings = 0, will not expand for results)"
+                            )
+                    except Exception as e:
+                        print_with_timestamp(f"  [WARNING] Error extracting class row {item.get('rowIndex')}: {e}")
+                        continue
+
+                print_with_timestamp(f"  [OK] PASS 1 complete: {len(class_data_list)} classes with entries to process")
+                if showclass_count > 0:
+                    log_import_activity(conn, 'scrape_class_results.py', target_table='ShowClass',
+                                      action='INSERT', row_count=showclass_count,
+                                      additional_info=f'ShowGUID: {show_guid}, ShowListID: {show_list_id}, Classes with entries: {len(class_data_list)}, Total classes: {showclass_count}')
+            else:
+              class_data_list = []
+              showclass_count = 0
+              for row_idx, class_row in enumerate(class_rows, 1):
                 try:
                     print_with_timestamp(f"  Extracting class row {row_idx}/{len(class_rows)}...")
 
@@ -3464,7 +3658,7 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
 
                     # Debug: Print first few cells to understand structure
                     if row_idx == 1 and cells:
-                        print_with_timestamp(f"    [DEBUG] First row cell contents:")
+                        debug_log(f"    [DEBUG] First row cell contents:")
                         for i, cell in enumerate(cells[:8]):
                             print_with_timestamp(f"      Cell {i}: '{cell.text.strip()[:50]}'")
 
@@ -3541,9 +3735,9 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                     print_with_timestamp(f"  [WARNING] Error extracting class row {row_idx}: {e}")
                     continue
             
-            print_with_timestamp(f"  [OK] PASS 1 complete: {len(class_data_list)} classes with entries to process")
-            # Log ShowClass saves
-            if showclass_count > 0:
+              print_with_timestamp(f"  [OK] PASS 1 complete: {len(class_data_list)} classes with entries to process")
+              # Log ShowClass saves
+              if showclass_count > 0:
                 log_import_activity(conn, 'scrape_class_results.py', target_table='ShowClass', 
                                   action='INSERT', row_count=showclass_count,
                                   additional_info=f'ShowGUID: {show_guid}, ShowListID: {show_list_id}, Classes with entries: {len(class_data_list)}, Total classes: {showclass_count}')
@@ -3775,9 +3969,9 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                     
                     if is_detail_row:
                         print_with_timestamp(f"    [WARNING] Row {row_idx} has detail row ID ({class_row_id[:80]}...), skipping")
-                        print_with_timestamp(f"    [DEBUG] Full row ID: {class_row_id}")
-                        print_with_timestamp(f"    [DEBUG] Found {len(rows)} rows in grid (after filtering detail rows)")
-                        print_with_timestamp(f"    [DEBUG] Looking for row at index {row_idx - 1} in filtered rows array")
+                        debug_log(f"    [DEBUG] Full row ID: {class_row_id}")
+                        debug_log(f"    [DEBUG] Found {len(rows)} rows in grid (after filtering detail rows)")
+                        debug_log(f"    [DEBUG] Looking for row at index {row_idx - 1} in filtered rows array")
                         continue
                     
                     row_id_map[row_idx] = class_row_id
@@ -3848,36 +4042,17 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                         continue  # Skip to next row if expansion failed
                     
                     # Row is expanded, now extract data immediately (before it gets collapsed by next expansion)
-                    print_with_timestamp(f"    [DEBUG] Row {row_idx} expanded successfully, proceeding to extraction...")
-                    # Wait for detail grids to appear and load BEFORE archiving
-                    try:
-                        # Wait for placing grids to appear near this row
-                        WebDriverWait(driver, 8).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, "table[id*='grPlacing']"))
-                        )
-                        time.sleep(sleep_short)  # Small additional wait after detection
-                    except:
-                        # If grids don't appear, wait a bit anyway
-                        time.sleep(sleep_medium * 2)
+                    debug_log(f"    [DEBUG] Row {row_idx} expanded successfully, proceeding to extraction...")
+                    # Brief settle only — do NOT WebDriverWait here (ChromeDriver can hang
+                    # forever on presence polls after large DOM transfers).
+                    time.sleep(sleep_short)
 
-                    if archive_class_details:
-                        try:
-                            save_hso_driver_page(
-                                driver,
-                                year,
-                                "classdetail",
-                                show_name or "show",
-                                show_guid=show_guid,
-                                extra_id=f"sl{show_list_id}_class{show_class_id}_row{row_idx}",
-                                require_class_substance=True,
-                            )
-                        except Exception as archive_err:
-                            print_with_timestamp(f"    [WARNING] Failed to archive class detail: {archive_err}")
-                    
-                    # Extract data for this single row using JavaScript
+                    # Extract + DB first; then complete HTML+raw archive (chunked, hang-safe).
                     try:
                         print_with_timestamp(f"    Extracting data for row {row_idx} (class_row_id: {class_row_id[:60]}...)...")
-                        row_extracted_data = driver.execute_script("""
+                        write_rebuild_heartbeat(f"sl{show_list_id} row={row_idx} extract")
+                        def _extract_row_js():
+                            return driver.execute_script("""
                             // Function to extract text from a cell, handling nested elements
                             function getCellText(cell) {
                                 if (!cell) return '';
@@ -4037,15 +4212,17 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                             
                             return result;
                         """, class_row_id)
-                        
+                        row_extracted_data = run_with_watchdog(
+                            _extract_row_js, timeout_sec=90, label=f"extract row {row_idx}"
+                        )                        
                         # Log debug info from JavaScript
                         if isinstance(row_extracted_data, dict) and 'debug' in row_extracted_data:
                             debug_info = row_extracted_data['debug']
-                            print_with_timestamp(f"    [DEBUG] JavaScript search: {debug_info.get('rowsSearched', 0)} rows searched, {debug_info.get('detailContainersFound', 0)} detail containers, {debug_info.get('placingGridsFound', 0)} placing grids, {debug_info.get('nonPlacingGridsFound', 0)} non-placing grids")
+                            debug_log(f"    [DEBUG] JavaScript search: {debug_info.get('rowsSearched', 0)} rows searched, {debug_info.get('detailContainersFound', 0)} detail containers, {debug_info.get('placingGridsFound', 0)} placing grids, {debug_info.get('nonPlacingGridsFound', 0)} non-placing grids")
                             if 'error' in debug_info:
-                                print_with_timestamp(f"    [DEBUG] JavaScript error: {debug_info['error']}")
+                                debug_log(f"    [DEBUG] JavaScript error: {debug_info['error']}")
                             if debug_info.get('nextRowIds'):
-                                print_with_timestamp(f"    [DEBUG] Sample next row IDs: {debug_info['nextRowIds']}")
+                                debug_log(f"    [DEBUG] Sample next row IDs: {debug_info['nextRowIds']}")
                         
                         # Remove debug from extracted data for processing
                         if isinstance(row_extracted_data, dict) and 'debug' in row_extracted_data:
@@ -4058,7 +4235,7 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                                 if placing_grids and not entry_column_map:
                                     entry_column_map = get_column_indices_for_entry_grid(placing_grids[0])
                                     if entry_column_map:
-                                        print_with_timestamp(f"    [DEBUG] Entry column mapping: {entry_column_map}")
+                                        debug_log(f"    [DEBUG] Entry column mapping: {entry_column_map}")
                                 
                                 # Try to get non-placing column map from a non-placing grid
                                 if not nonplacing_column_map:
@@ -4074,7 +4251,7 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                                                     if len(cells) >= 12:
                                                         nonplacing_column_map = get_column_indices_for_nonplacing_grid(table)
                                                         if nonplacing_column_map:
-                                                            print_with_timestamp(f"    [DEBUG] Non-placing column mapping: {nonplacing_column_map}")
+                                                            debug_log(f"    [DEBUG] Non-placing column mapping: {nonplacing_column_map}")
                                                             break
                                             except:
                                                 continue
@@ -4082,23 +4259,23 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                                 print_with_timestamp(f"    [WARNING] Error getting column maps: {e}")
                         
                         # Process the extracted data for this row
-                        print_with_timestamp(f"    [DEBUG] Extracted data structure: placingEntries={len(row_extracted_data.get('placingEntries', [])) if row_extracted_data else 0}, nonPlacingEntries={len(row_extracted_data.get('nonPlacingEntries', [])) if row_extracted_data else 0}")
+                        debug_log(f"    [DEBUG] Extracted data structure: placingEntries={len(row_extracted_data.get('placingEntries', [])) if row_extracted_data else 0}, nonPlacingEntries={len(row_extracted_data.get('nonPlacingEntries', [])) if row_extracted_data else 0}")
                         
                         # Debug: show raw cell data from first placing entry
                         if row_extracted_data and row_extracted_data.get('placingEntries'):
                             first_raw = row_extracted_data['placingEntries'][0]
                             raw_cells = [f"{k}={v[:20] if v else ''}" for k, v in sorted(first_raw.items()) if k.startswith('cell_')][:8]
-                            print_with_timestamp(f"    [DEBUG] First placing raw cells: {raw_cells}")
+                            debug_log(f"    [DEBUG] First placing raw cells: {raw_cells}")
                         
                         # Debug: show raw cell data from first non-placing entry
                         if row_extracted_data and row_extracted_data.get('nonPlacingEntries'):
                             first_raw_np = row_extracted_data['nonPlacingEntries'][0]
                             raw_np_cells = [f"{k}={v[:20] if v else ''}" for k, v in sorted(first_raw_np.items()) if k.startswith('cell_')][:8]
-                            print_with_timestamp(f"    [DEBUG] First non-placing raw cells: {raw_np_cells}")
+                            debug_log(f"    [DEBUG] First non-placing raw cells: {raw_np_cells}")
                         
                         # If we have non-placing entries but no column map, try to set it from the extracted data
                         if row_extracted_data and row_extracted_data.get('nonPlacingEntries') and not nonplacing_column_map:
-                            print_with_timestamp(f"    [DEBUG] Non-placing entries found but column map missing, attempting to set from extracted data...")
+                            debug_log(f"    [DEBUG] Non-placing entries found but column map missing, attempting to set from extracted data...")
                             # Try to find a non-placing grid on the page to get column mapping
                             try:
                                 all_tables = driver.find_elements(By.CSS_SELECTOR, "table")
@@ -4112,7 +4289,7 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                                                 if len(cells) >= 12:
                                                     nonplacing_column_map = get_column_indices_for_nonplacing_grid(table)
                                                     if nonplacing_column_map:
-                                                        print_with_timestamp(f"    [DEBUG] Non-placing column mapping set from grid: {nonplacing_column_map}")
+                                                        debug_log(f"    [DEBUG] Non-placing column mapping set from grid: {nonplacing_column_map}")
                                                         break
                                         except:
                                             continue
@@ -4121,7 +4298,7 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                         
                         # If still no column map but we have non-placing entries, use default mapping
                         if row_extracted_data and row_extracted_data.get('nonPlacingEntries') and not nonplacing_column_map:
-                            print_with_timestamp(f"    [DEBUG] Using default non-placing column mapping (column map not found)")
+                            debug_log(f"    [DEBUG] Using default non-placing column mapping (column map not found)")
                             # Use default positional mapping for non-placing entries (12 columns)
                             nonplacing_column_map = {
                                 'Entry': 0,
@@ -4178,7 +4355,7 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                                 # Debug: show first entry to verify column mapping
                                 if all_entry_details:
                                     first_entry = all_entry_details[0]
-                                    print_with_timestamp(f"    [DEBUG] First placing entry: Place={first_entry.get('Place')}, Entry={first_entry.get('Entry')}, Horse={first_entry.get('Horse', '')[:30]}")
+                                    debug_log(f"    [DEBUG] First placing entry: Place={first_entry.get('Place')}, Entry={first_entry.get('Entry')}, Horse={first_entry.get('Horse', '')[:30]}")
                                 
                                 if all_entry_details:
                                     saved_entries = 0
@@ -4207,8 +4384,8 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                             if max_entries and max_placings and max_entries > max_placings and not nonplacing_complete:
                                 nonplacing_count = max_entries - max_placings
                                 nonplacing_entries = row_extracted_data.get('nonPlacingEntries', [])
-                                print_with_timestamp(f"    [DEBUG] Non-placing check: max_entries={max_entries}, max_placings={max_placings}, nonplacing_count={nonplacing_count}, nonplacing_complete={nonplacing_complete}")
-                                print_with_timestamp(f"    [DEBUG] Non-placing entries found: {len(nonplacing_entries) if nonplacing_entries else 0}, column_map_set={nonplacing_column_map is not None}")
+                                debug_log(f"    [DEBUG] Non-placing check: max_entries={max_entries}, max_placings={max_placings}, nonplacing_count={nonplacing_count}, nonplacing_complete={nonplacing_complete}")
+                                debug_log(f"    [DEBUG] Non-placing entries found: {len(nonplacing_entries) if nonplacing_entries else 0}, column_map_set={nonplacing_column_map is not None}")
                                 if nonplacing_entries:
                                     if not nonplacing_column_map:
                                         print_with_timestamp(f"    [WARNING] Non-placing entries found but column map is missing - cannot process")
@@ -4238,7 +4415,7 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                                         # Debug: show first non-placing entry to verify column mapping
                                         if all_nonplacing_details:
                                             first_np = all_nonplacing_details[0]
-                                            print_with_timestamp(f"    [DEBUG] First non-placing entry: Entry={first_np.get('Entry')}, Horse={first_np.get('Horse', '')[:30]}, Rider={first_np.get('Rider', '')[:30]}")
+                                            debug_log(f"    [DEBUG] First non-placing entry: Entry={first_np.get('Entry')}, Horse={first_np.get('Horse', '')[:30]}, Rider={first_np.get('Rider', '')[:30]}")
                                         
                                         if all_nonplacing_details:
                                             saved_nonplacing = 0
@@ -4279,7 +4456,42 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                                                 cursor.close()
                                 else:
                                     if max_entries and max_placings and max_entries > max_placings:
-                                        print_with_timestamp(f"    [DEBUG] No non-placing entries extracted (expected {max_entries - max_placings})")
+                                        debug_log(f"    [DEBUG] No non-placing entries extracted (expected {max_entries - max_placings})")
+
+                        # Complete page archive (.html + _raw.txt) AFTER extract+DB
+                        if archive_class_details:
+                            try:
+                                driver.set_script_timeout(120)
+                                write_rebuild_heartbeat(f"sl{show_list_id} row={row_idx} archive")
+                                run_with_watchdog(
+                                    lambda: save_hso_driver_page(
+                                        driver,
+                                        year,
+                                        "classdetail",
+                                        show_name or "show",
+                                        show_guid=show_guid,
+                                        extra_id=f"sl{show_list_id}_class{show_class_id}_row{row_idx}",
+                                        require_class_substance=True,
+                                    ),
+                                    timeout_sec=180,
+                                    label=f"archive row {row_idx}",
+                                )
+                            except (TimeoutException, TimeoutError) as archive_err:
+                                print_with_timestamp(f"    [WARNING] Archive timeout for row {row_idx}: {archive_err}")
+                                force_kill_chromedriver(driver)
+                                try:
+                                    new_driver = create_reconnect_func()
+                                    if new_driver:
+                                        driver = new_driver
+                                except Exception:
+                                    pass
+                            except Exception as archive_err:
+                                print_with_timestamp(f"    [WARNING] Failed to archive class detail: {archive_err}")
+                            finally:
+                                try:
+                                    driver.set_script_timeout(90)
+                                except Exception:
+                                    pass
                         
                         # Collapse the row before moving to next
                         try:
@@ -4291,7 +4503,34 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                         
                         # Only increment processed_count after successful extraction and collapse
                         processed_count += 1
+                        write_rebuild_heartbeat(
+                            f"sl{show_list_id} row={row_idx} done processed={processed_count}/{len(class_data_list)}"
+                        )
+
+                        # Soft-recycle Chrome mid-show so large archive runs cannot wedge forever
+                        if (
+                            HSO_RECYCLE_EVERY_N_ROWS > 0
+                            and processed_count % HSO_RECYCLE_EVERY_N_ROWS == 0
+                            and pass2_idx < len(class_data_list)
+                        ):
+                            print_with_timestamp(
+                                f"  [RECYCLE] Refreshing browser after {processed_count} classdetail rows..."
+                            )
+                            force_kill_chromedriver(driver)
+                            new_driver = create_reconnect_func()
+                            if new_driver:
+                                driver = new_driver
                     
+                    except (TimeoutException, TimeoutError) as e:
+                        print_with_timestamp(f"    [WARNING] Script/watchdog timeout extracting row {row_idx}: {e}")
+                        force_kill_chromedriver(driver)
+                        try:
+                            print_with_timestamp(f"    [WARNING] Reconnecting after timeout...")
+                            new_driver = create_reconnect_func()
+                            if new_driver:
+                                driver = new_driver
+                        except Exception:
+                            pass
                     except Exception as e:
                         print_with_timestamp(f"    [WARNING] Error extracting data for row {row_idx}: {e}")
                         import traceback
@@ -4309,6 +4548,7 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                         _ = driver.current_url
                     except Exception:
                         print_with_timestamp(f"    [WARNING] Driver session invalid after error, reconnecting...")
+                        force_kill_chromedriver(driver)
                         new_driver = create_reconnect_func()
                         if new_driver:
                             driver = new_driver

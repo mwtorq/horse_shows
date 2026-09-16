@@ -32,9 +32,12 @@ from scrape_saddlehorsereport import (  # noqa: E402
     find_or_insert_class,
     get_db_connection,
     get_or_create_show_result,
+    parse_class_hps_headers,
     parse_judge_card_classes,
     parse_show_meta,
     print_with_timestamp,
+    update_class_hps_category,
+    update_show_hps,
     upsert_judge_card,
     upsert_judges,
 )
@@ -367,10 +370,31 @@ def reload_one_archive(
             print_with_timestamp(
                 f"  WOULD reload sid={sid} show={show_list_id} "
                 f"blocks={stats['blocks']} cards={stats['cards_parsed']} "
+                f"hps={meta.get('hps_label')}x{meta.get('hps_multiplier')} "
                 f"file={os.path.basename(path)}"
             )
             continue
 
+        update_show_hps(
+            conn,
+            show_list_id,
+            meta.get("hps_label"),
+            meta.get("hps_multiplier"),
+        )
+        # Always stamp per-class HPS Category from headers (works for Single-HPS too)
+        headers = parse_class_hps_headers(soup)
+        if headers:
+            hso_for_hps = load_hso_class_sides(conn, show_list_id)
+            shr_for_hps = [
+                ClassSide(class_id=None, class_name=h["class_name"]) for h in headers
+            ]
+            hps_matches, _, _ = match_classes(shr_for_hps, hso_for_hps, min_score=0.72)
+            name_to_hps = {h["class_name"]: h["hps_category"] for h in headers}
+            for m in hps_matches:
+                if m.hso.class_id and name_to_hps.get(m.shr.class_name):
+                    update_class_hps_category(
+                        conn, int(m.hso.class_id), name_to_hps[m.shr.class_name]
+                    )
         wiped = wipe_judge_cards_for_show(conn, show_list_id)
         stats["wiped"] += wiped
         judge_map = upsert_judges(conn, show_list_id, judge_names)
@@ -406,7 +430,16 @@ def reload_one_archive(
                 if has_numbered:
                     stats["skipped"] += len(block.get("cards") or [])
                     continue
-                class_id = find_or_insert_class(conn, show_list_id, cname)
+                class_id = find_or_insert_class(
+                    conn,
+                    show_list_id,
+                    cname,
+                    hps_category=block.get("hps_category"),
+                )
+            else:
+                update_class_hps_category(
+                    conn, int(class_id), block.get("hps_category")
+                )
             for card in block.get("cards") or []:
                 jname = (card.get("judge_name") or "").strip()
                 if not jname:
