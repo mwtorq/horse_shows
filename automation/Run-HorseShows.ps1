@@ -57,6 +57,11 @@ param(
     # job, so it is never skipped, only flagged.
     [int]$LockWaitMinutes = 45,
 
+    # Saddle Horse Report enrichment (judges, judge cards, horse pedigree). Requires a
+    # DPAPI credential saved once via scripts\Save-SaddleHorseReportCredential.ps1.
+    [switch]$SkipSaddleHorseReport,
+    [switch]$SaddleHorseReportFull,
+
     [switch]$DryRun
 )
 
@@ -68,6 +73,7 @@ if (-not (Test-Path -LiteralPath $CommonPath)) {
 
 . $CommonPath
 . (Join-Path $PSScriptRoot 'NonPlacingQueue.ps1')
+. (Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\Get-SaddleHorseReportCredential.ps1')
 $script:AutomationDryRun = [bool]$DryRun
 
 $Repo     = Split-Path -Parent $PSScriptRoot
@@ -166,6 +172,46 @@ try {
 
         if ($runSweep) {
             Invoke-Step -Name $stepName -Exe $py -WorkingDirectory $Repo -Arguments $stepArgs | Out-Null
+        }
+    }
+
+    # Saddle Horse Report: subscription content behind login. Delta by default; -SaddleHorseReportFull
+    # for the initial all-years backfill. Credential never appears on the command line.
+    if (-not $SkipSaddleHorseReport) {
+        $shrCred = Get-SaddleHorseReportCredential
+        if (-not $shrCred) {
+            Request-Attention ('Saddle Horse Report was skipped: no stored credential. ' +
+                'Create one once with: powershell -File "' + (Join-Path $Repo 'scripts\Save-SaddleHorseReportCredential.ps1') + '"')
+        }
+        else {
+            Write-Log ("Saddle Horse Report: using stored credential for {0}" -f $shrCred.UserName)
+            $shrArgs = @('scrape_saddlehorsereport.py')
+            if ($SaddleHorseReportFull) {
+                $shrArgs += '--full'
+                $shrName = 'Scrape Saddle Horse Report (full)'
+            }
+            else {
+                $shrArgs += '--delta'
+                foreach ($year in $yearList) {
+                    $shrArgs += @('--year', "$year")
+                }
+                $shrName = "Scrape Saddle Horse Report (delta for $($yearList -join ','))"
+            }
+            $judgesBefore = Get-DbCount -Python $py -Server $Server -Database $Database `
+                -Query 'SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=''sResults'' AND TABLE_NAME=''ShowJudge'''
+            Invoke-Step -Name $shrName -Exe $py -WorkingDirectory $Repo -Arguments $shrArgs `
+                -Environment @{
+                    SHR_EMAIL    = $shrCred.UserName
+                    SHR_PASSWORD = $shrCred.GetNetworkCredential().Password
+                } | Out-Null
+            if ($judgesBefore -eq 0) {
+                # Table may have been created on first run; counts below still work once present.
+            }
+            $judgeCount = Get-DbCount -Python $py -Server $Server -Database $Database `
+                -Query "SELECT COUNT(*) FROM sResults.ShowJudge"
+            $cardCount = Get-DbCount -Python $py -Server $Server -Database $Database `
+                -Query "SELECT COUNT(*) FROM sResults.ShowResults_JudgeCard"
+            Write-Log "Saddle Horse Report totals: $judgeCount judge(s), $cardCount judge-card row(s)"
         }
     }
 

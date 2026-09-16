@@ -13,8 +13,12 @@
     sl.ID >= that id. There is no year, month, or count option. ShowList.ID is an identity
     column, so it orders by discovery and not by show year - the 2026 shows occupy ids
     9779-10734 while 2014's sit inside that range at 9914-10251. Starting from the first
-    show of the current year therefore drags all of 2014 along with it: 548 shows and
-    5,050 classes rather than 2026's own 335 and 3,337. A year is not expressible.
+    show of the current year therefore used to drag all of 2014 along with it: 548 shows
+    and 5,050 classes rather than 2026's own 335 and 3,337.
+
+    2014 is excluded in the shared WHERE (sl.Year <> 2014). Those shows are archive-only
+    on horseshowsonline.com and are not worth sweeping; keep that filter in lockstep with
+    get_classes_with_nonplacing_entries in scrape_class_nonplacing_results.py.
 
     What is expressible is a suffix of the id order, so both runners work newest first and
     slice the queue by cumulative class count. Get-NonPlacingEntryPoint answers "how far
@@ -45,6 +49,7 @@ LEFT JOIN (
     GROUP BY ShowClassID
 ) ec ON ec.ShowClassID = sc.ID
 WHERE sl.ShowGUID IS NOT NULL AND sl.ShowGUID <> ''
+  AND sl.Year <> 2014
   AND sl.StartDate IS NOT NULL
   AND CAST(sl.EndDate AS DATE) < CAST(GETDATE() AS DATE)
   AND sc.Entries IS NOT NULL

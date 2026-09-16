@@ -16,16 +16,20 @@ SELECT [ID]
       ,[CreatedDate]
       ,[UpdatedDate]
   FROM [HorseShows].[sResults].[ShowResults]
+  WHERE UpdatedDate>='2026-09-13'
+  WHERE ShowClassID IN (SELECT ID FROM [HorseShows].[sResults].[ShowClass] WHERE ShowListID=10783)
+  AND Entry='376'
 
-  select * from [sResults].[vwResults] (NOLOCK)
-  --WHERE Year IN (2025,2026)
+  select * from [HorseShows].[sResults].[vwResults] (NOLOCK)
+  WHERE Year IN (2026)
+  AND ShowName LIKE '%MONARCH%'
   --WHERE ShowName='2025 IASPHA FALL HORSE SHOW' AND Year=2025
   --WHERE ClassName LIKE 'WARM UP 2% (SPECIAL HUNTERS ONLY)'
   --WHERE ShowName='UPHA AMERICAN ROYAL NATIONAL CHAMPIONSHIP' AND Year=2025 AND ClassName LIKE '%exceptional%'
   --WHERE Year=2025 AND ShowName in ('ST. LOUIS NATIONAL CHARITY FALL KICK OFF HORSE SHO','MONARCH SERIES CHAMPIONSHIP HORSE SHOW','MISSOURI STATE FAIR','HERE COMES THE BOOM I & II','BRIDLESPUR HORSE SHOW')
   --WHERE Year=2025 AND ShowName in ('UPHA CHAPTER V HORSE SHOW 2025')
   --WHERE HorseName like '%spectra%'
-  WHERE Trainer='WILCOX, HILARY' OR Trainer LIKE '%RED%WING FARM%'
+  --WHERE Trainer='WILCOX, HILARY' OR Trainer LIKE '%RED%WING FARM%'
   --WHERE Rider LIKE '%Wa%lterman%'
   --WHERE Rider LIKE '%Brynlee%'
   --WHERE Rider LIKE '%Totterdale%'

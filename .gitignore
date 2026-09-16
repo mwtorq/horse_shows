@@ -1,5 +1,20 @@
 __pycache__/**
 
+# DPAPI credential blobs must never be committed (Save-* scripts write under
+# ResultsAutomation by default; ignore any accidental local copy).
+*.cred
+
+# Local rebuild snapshots / scratch
+merge_rebuild_snapshots/
+
+# Local scratch / debug capture under scripts/
+scripts/_debug_*
+scripts/*.html
+scripts/__pycache__/
+
+# Ad-hoc local CSVs
+2026 Monarch.csv
+
 # Power BI writes local state next to the project. cache.abf alone is 345 MB,
 # past GitHub's 100 MB blob limit, and none of it is source.
 **/.pbi/cache.abf

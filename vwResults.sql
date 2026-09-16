@@ -1,6 +1,6 @@
 CREATE OR ALTER VIEW [sResults].[vwResults] AS
 
-  SELECT TOP 100000000 s.[Year]
+  SELECT TOP 10000000 s.[Year]
       ,s.[ShowName]
       ,s.[StartDate]
       ,s.[EndDate]
@@ -10,6 +10,12 @@ CREATE OR ALTER VIEW [sResults].[vwResults] AS
       ,CASE WHEN cl.[ClassName] IS NULL THEN 'No classes loaded' ELSE cl.[ClassName] END AS ClassName
       ,CASE WHEN cl.[ClassType] IS NULL THEN 'No classes loaded' ELSE cl.[ClassType] END AS ClassType
       ,CASE WHEN cl.[DivisionName] IS NULL THEN 'No classes loaded' ELSE cl.[DivisionName] END AS DivisionName
+      ,CASE
+           WHEN cl.[Class] IS NULL THEN 'No classes loaded'
+           WHEN j.[Judges] IS NOT NULL THEN j.[Judges]
+           WHEN r.[Entry] IS NULL THEN 'No entries'
+           ELSE ''
+         END AS JudgePlacings
       ,CASE WHEN r.[Entry] IS NULL THEN 'No entries' ELSE r.[Entry] END AS Entry
       ,CASE WHEN r.[Start] IS NULL THEN 'No entries' ELSE r.[Start] END AS Start
       ,CASE WHEN r.[Place] IS NULL THEN 'No entries' ELSE CASE WHEN CAST(r.[Place] AS VARCHAR(10))='0' THEN 'DNP' ELSE CASE WHEN CAST(r.[Place] AS VARCHAR(10))='1' AND (cl.[ClassName] LIKE '%Champion%' OR cl.[ClassName] LIKE '%Challenge%' OR cl.[ClassName] LIKE '%Stake%') THEN 'Champion' WHEN CAST(r.[Place] AS VARCHAR(10))='2' AND (cl.[ClassName] LIKE '%Champion%' OR cl.[ClassName] LIKE '%Challenge%' OR cl.[ClassName] LIKE '%Stake%') THEN 'Reserve' ELSE CAST(r.[Place] AS VARCHAR(10)) END END + ' out of ' + CAST(cl.[Entries] AS VARCHAR(10)) END AS Place
@@ -31,6 +37,58 @@ CREATE OR ALTER VIEW [sResults].[vwResults] AS
   LEFT JOIN [HorseShows].[sResults].[Competitors] c (NOLOCK) ON r.RiderID=c.ID
   LEFT JOIN [HorseShows].[sResults].[Competitors] o (NOLOCK) ON h.OwnerID=o.ID
   LEFT JOIN [HorseShows].[sResults].[Competitors] tr (NOLOCK) ON r.TrainerID=tr.ID
+  OUTER APPLY (
+      -- Card placings when present; otherwise show-level ShowJudge names.
+      SELECT COALESCE(cards.Judges, shownames.Judges) AS Judges
+      FROM (SELECT 1 AS _) AS _
+      OUTER APPLY (
+          SELECT STRING_AGG(
+                     CAST(
+                         d.JudgeName
+                         + CASE
+                               WHEN d.Place IS NULL THEN ''
+                               ELSE ': ' + CAST(d.Place AS VARCHAR(10))
+                           END
+                         AS NVARCHAR(MAX)
+                     ),
+                     ', '
+                 ) WITHIN GROUP (ORDER BY d.MinSort, d.JudgeName) AS Judges
+          FROM (
+              SELECT sj.JudgeName,
+                     jc.Place,
+                     MIN(ISNULL(sj.SortOrder, 2147483647)) AS MinSort
+              FROM [HorseShows].[sResults].[ShowResults_JudgeCard] jc (NOLOCK)
+              INNER JOIN [HorseShows].[sResults].[ShowJudge] sj (NOLOCK)
+                  ON sj.ID = jc.ShowJudgeID
+              INNER JOIN [HorseShows].[sResults].[ShowResults] srjc (NOLOCK)
+                  ON srjc.ID = jc.ShowResultsID
+              WHERE r.ID IS NOT NULL
+                AND (
+                      (
+                          NULLIF(LTRIM(RTRIM(jc.Entry)), '') IS NOT NULL
+                          AND NULLIF(LTRIM(RTRIM(r.Entry)), '') IS NOT NULL
+                          AND LTRIM(RTRIM(jc.Entry)) = LTRIM(RTRIM(r.Entry))
+                          AND srjc.ShowClassID = cl.ID
+                      )
+                   OR (
+                          NULLIF(LTRIM(RTRIM(jc.Entry)), '') IS NULL
+                          AND jc.ShowResultsID = r.ID
+                      )
+                )
+              GROUP BY sj.JudgeName, jc.Place
+          ) d
+      ) cards
+      OUTER APPLY (
+          SELECT STRING_AGG(
+                     CAST(sj.JudgeName AS NVARCHAR(MAX)),
+                     ', '
+                 ) WITHIN GROUP (
+                     ORDER BY ISNULL(sj.SortOrder, 2147483647), sj.JudgeName
+                 ) AS Judges
+          FROM [HorseShows].[sResults].[ShowJudge] sj (NOLOCK)
+          WHERE sj.ShowListID = s.ID
+      ) shownames
+  ) j
   --ORDER BY CAST(s.StartDate AS DATE) DESC,s.ShowName,CASE WHEN LEN(cl.Class)=1 THEN '00000' + cl.Class WHEN LEN(cl.Class)=2 THEN '0000' + cl.Class WHEN LEN(cl.Class)=3 THEN '000' + cl.Class WHEN LEN(cl.Class)=4 THEN '00' + cl.Class WHEN LEN(cl.Class)=5 THEN '0' + cl.Class ELSE cl.Class END,r.Place
   ORDER BY CAST(s.StartDate AS DATE) DESC,s.ShowName,
     -- First, categorize: 0 = pure number, 1 = prefix+number(+suffix), 2 = pure string
