@@ -1,0 +1,6 @@
+# Python dependencies for the horse_shows scraping project.
+# Install with: pip install -r requirements.txt
+selenium>=4.20,<5
+pyodbc>=5.1,<6
+beautifulsoup4>=4.12,<5
+requests>=2.31,<3
