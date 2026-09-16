@@ -4,6 +4,9 @@ Navigates to ClassResults page for each ShowGUID and captures:
 - Class summary data (Class, Class Name, Class Type, Division Name, Entries, Placings)
 - Expanded entry details (Place, Entry, Horse, Rider, Country, Owner, Trainer, Prize, etc.)
 Saves to sResults.ShowResults and sResults.Competitors tables
+
+Each ClassResults page is archived under horseshowsonline/{year}/results/ as
+debug_hso_*.html plus a matching *_raw.txt (same idea as saddlehorsereport/).
 """
 
 from selenium import webdriver
@@ -17,6 +20,8 @@ import pyodbc
 import getpass
 import socket
 from datetime import datetime
+
+from hso_archive import save_hso_driver_page, save_hso_page
 
 def print_with_timestamp(message, end='\n'):
     """Print message with timestamp prefix
@@ -1742,7 +1747,10 @@ def get_column_indices_for_class_grid(grid):
     
     try:
         # Find header row
-        header_rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='HeaderRow'], tr.dxgvHeaderRow")
+        # DevExpress uses DXHeadersRow0 (Headers, plural) on some themes
+        header_rows = grid.find_elements(
+            By.CSS_SELECTOR, "tr[id*='HeaderRow'], tr[id*='HeadersRow'], tr.dxgvHeaderRow"
+        )
         if header_rows:
             header_cells = header_rows[0].find_elements(By.TAG_NAME, "th, td")
             print_with_timestamp(f"  [DEBUG] Header row has {len(header_cells)} cells")
@@ -2203,7 +2211,11 @@ def extract_entry_details_from_row(row_element, entry_column_map, reconnect_func
         return None
 
 def get_or_create_showclass(conn, show_list_id, class_summary):
-    """Get existing ShowClass ID or create new ShowClass, return ID"""
+    """Get existing ShowClass ID or create new ShowClass, return ID.
+
+    When an existing row is found, fill missing HSO summary fields (Entries,
+    Placings, ClassType, DivisionName) without wiping richer values.
+    """
     try:
         cursor = conn.cursor()
         
@@ -2225,20 +2237,50 @@ def get_or_create_showclass(conn, show_list_id, class_summary):
         except:
             pass
         
+        class_num = class_summary.get('Class', '') or ''
+        class_name = class_summary.get('Class Name', '') or ''
+        class_type = class_summary.get('Class Type', '') or ''
+        division = class_summary.get('Division Name', '') or ''
+
         # Look up existing ShowClass by ShowListID, Class, and ClassName
         cursor.execute("""
-            SELECT ID FROM sResults.ShowClass 
+            SELECT ID, Entries, Placings, ClassType, DivisionName
+            FROM sResults.ShowClass 
             WHERE ShowListID = ? AND Class = ? AND ClassName = ?
         """, 
             show_list_id,
-            class_summary.get('Class', ''),
-            class_summary.get('Class Name', '')
+            class_num,
+            class_name
         )
         
         existing = cursor.fetchone()
         
         if existing:
-            return existing[0]
+            show_class_id, cur_entries, cur_placings, cur_type, cur_div = existing
+            sets, params = [], []
+            # Prefer HSO Entries when DB is NULL/0; allow raising if HSO reports more
+            if entries is not None and (cur_entries is None or cur_entries == 0 or entries > cur_entries):
+                if entries != cur_entries:
+                    sets.append("Entries = ?")
+                    params.append(entries)
+            if placings is not None and (cur_placings is None or cur_placings == 0) and placings > 0:
+                sets.append("Placings = ?")
+                params.append(placings)
+            if class_type and not (cur_type or "").strip():
+                sets.append("ClassType = ?")
+                params.append(class_type)
+            if division and not (cur_div or "").strip():
+                sets.append("DivisionName = ?")
+                params.append(division)
+            if sets:
+                sets.append("UpdatedDate = GETDATE()")
+                params.append(show_class_id)
+                cursor.execute(
+                    f"UPDATE sResults.ShowClass SET {', '.join(sets)} WHERE ID = ?",
+                    params,
+                )
+                conn.commit()
+            return show_class_id
         else:
             # Insert new ShowClass
             cursor.execute("""
@@ -2248,10 +2290,10 @@ def get_or_create_showclass(conn, show_list_id, class_summary):
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
                 show_list_id,
-                class_summary.get('Class', ''),
-                class_summary.get('Class Name', ''),
-                class_summary.get('Class Type', ''),
-                class_summary.get('Division Name', ''),
+                class_num,
+                class_name,
+                class_type,
+                division,
                 entries,
                 placings
             )
@@ -2313,15 +2355,14 @@ def get_or_create_horse(conn, horse_name, owner_id=None):
     finally:
         cursor.close()
 
-def save_show_result_to_database(conn, show_class_id, entry_details, cursor=None, commit=True):
-    """Save entry detail result to ShowResults table (with duplicate check)
-    
-    Args:
-        conn: Database connection
-        show_class_id: ShowClass ID
-        entry_details: Dictionary with entry details
-        cursor: Optional cursor to reuse (for batch operations). If None, creates new cursor.
-        commit: Whether to commit after insert (default: True). Set False for batch operations.
+def save_show_result_to_database(conn, show_class_id, entry_details, cursor=None, commit=True,
+                                 prefer_hso_identity=False):
+    """Save entry detail result to ShowResults table (with duplicate check).
+
+    When a matching row already exists (same Entry, or same Place), fill NULL
+    HorseID/RiderID/TrainerID/Entry and related text fields from HSO.
+    If prefer_hso_identity is True, also overwrite identity fields when HSO
+    provides non-empty values (used for merged-show recapture).
     """
     if not entry_details:
         return False
@@ -2331,77 +2372,102 @@ def save_show_result_to_database(conn, show_class_id, entry_details, cursor=None
         cursor = conn.cursor()
 
     try:
-        # Check for duplicate entry in this class
         entry_number = entry_details.get('Entry', '').strip() if entry_details.get('Entry') else None
         place = None
         try:
             place_str = entry_details.get('Place', '').strip()
             if place_str:
                 place = int(place_str)
-        except:
+        except Exception:
             pass
 
-        # Check if this entry already exists for this class
+        existing_id = None
         if entry_number:
             cursor.execute("""
-                SELECT COUNT(*) 
-                FROM sResults.ShowResults 
+                SELECT TOP 1 ID, HorseID, RiderID, TrainerID, Entry, Country, Prize, AddBack,
+                       Start, Score, [Percent], USEF, EC
+                FROM sResults.ShowResults
                 WHERE ShowClassID = ? AND Entry = ?
+                ORDER BY ID
             """, show_class_id, entry_number)
-        elif place is not None:
+            row = cursor.fetchone()
+            if row:
+                existing_id = row[0]
+                existing = row
+        if existing_id is None and place is not None:
             cursor.execute("""
-                SELECT COUNT(*) 
-                FROM sResults.ShowResults 
+                SELECT TOP 1 ID, HorseID, RiderID, TrainerID, Entry, Country, Prize, AddBack,
+                       Start, Score, [Percent], USEF, EC
+                FROM sResults.ShowResults
                 WHERE ShowClassID = ? AND Place = ?
+                ORDER BY ID
             """, show_class_id, place)
-        else:
-            # Can't check for duplicates without entry number or place
-            pass
-
-        if entry_number or place is not None:
-            duplicate_count = cursor.fetchone()[0]
-            if duplicate_count > 0:
-                return False  # Duplicate entry, don't save
-
-    except Exception as e:
-        # If duplicate check fails, continue anyway
-        pass
-
-    try:
-        # Get or create competitor IDs for Rider and Trainer
-        rider_id = None
-        trainer_id = None
+            row = cursor.fetchone()
+            if row:
+                existing_id = row[0]
+                existing = row
 
         rider = entry_details.get('Rider', '').strip() if entry_details.get('Rider') else None
         trainer = entry_details.get('Trainer', '').strip() if entry_details.get('Trainer') else None
-
-        if rider:
-            rider_id = get_or_create_competitor_by_role(conn, rider, 'Rider')
-        if trainer:
-            trainer_id = get_or_create_competitor_by_role(conn, trainer, 'Trainer')
-
-        # Get or create owner ID (for horse)
-        owner_id = None
         owner = entry_details.get('Owner', '').strip() if entry_details.get('Owner') else None
-        if owner:
-            owner_id = get_or_create_competitor_by_role(conn, owner, 'Owner')
-
-        # Get or create horse ID (with owner)
-        horse_id = None
         horse_name = entry_details.get('Horse', '').strip() if entry_details.get('Horse') else None
-        if horse_name:
-            horse_id = get_or_create_horse(conn, horse_name, owner_id)
 
-        # Parse numeric values (re-parse since we need it for insert)
-        place = None
-        try:
-            place_str = entry_details.get('Place', '').strip()
-            if place_str:
-                place = int(place_str)
-        except:
-            pass
+        rider_id = get_or_create_competitor_by_role(conn, rider, 'Rider') if rider else None
+        trainer_id = get_or_create_competitor_by_role(conn, trainer, 'Trainer') if trainer else None
+        owner_id = get_or_create_competitor_by_role(conn, owner, 'Owner') if owner else None
+        horse_id = get_or_create_horse(conn, horse_name, owner_id) if horse_name else None
 
-        # Insert into ShowResults
+        if existing_id is not None:
+            (
+                _id, cur_horse, cur_rider, cur_trainer, cur_entry, cur_country, cur_prize,
+                cur_addback, cur_start, cur_score, cur_percent, cur_usef, cur_ec
+            ) = existing
+            sets, params = [], []
+
+            def set_id(col, new_val, cur_val):
+                if not new_val:
+                    return
+                if cur_val is None or (prefer_hso_identity and new_val != cur_val):
+                    sets.append(f"{col} = ?")
+                    params.append(new_val)
+
+            def set_text(col, new_val, cur_val):
+                new_val = (new_val or "").strip()
+                if not new_val:
+                    return
+                if not (cur_val or "").strip() or (prefer_hso_identity and new_val != (cur_val or "").strip()):
+                    sets.append(f"{col} = ?")
+                    params.append(new_val)
+
+            set_id("HorseID", horse_id, cur_horse)
+            set_id("RiderID", rider_id, cur_rider)
+            set_id("TrainerID", trainer_id, cur_trainer)
+            if entry_number and (not (cur_entry or "").strip() or prefer_hso_identity):
+                if entry_number != (cur_entry or "").strip():
+                    sets.append("Entry = ?")
+                    params.append(entry_number)
+            set_text("Country", entry_details.get('Country'), cur_country)
+            set_text("Prize", entry_details.get('Prize'), cur_prize)
+            set_text("AddBack", entry_details.get('AddBack'), cur_addback)
+            set_text("Start", entry_details.get('Start'), cur_start)
+            set_text("Score", entry_details.get('Score'), cur_score)
+            set_text("Percent", entry_details.get('Percent'), cur_percent)
+            set_text("USEF", entry_details.get('USEF'), cur_usef)
+            set_text("EC", entry_details.get('EC'), cur_ec)
+
+            if sets:
+                sets.append("UpdatedDate = GETDATE()")
+                params.append(existing_id)
+                cursor.execute(
+                    f"UPDATE sResults.ShowResults SET {', '.join(sets)} WHERE ID = ?",
+                    params,
+                )
+                if commit:
+                    conn.commit()
+                return True
+            return False  # already complete
+
+        # Insert new row
         cursor.execute("""
             INSERT INTO sResults.ShowResults 
             (ShowClassID, Place, Entry, HorseID, Country, Prize, AddBack, Start, Score, [Percent], USEF, EC,
@@ -2865,7 +2931,7 @@ def update_show_details_in_database(conn, show_list_id, show_details):
         return False
 
 
-def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_name, conn, show_class_ids=None, use_direct_url=False, sleep_short=0.3, sleep_medium=0.5, sleep_long=1):
+def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_name, conn, show_class_ids=None, use_direct_url=False, sleep_short=0.3, sleep_medium=0.5, sleep_long=1, prefer_hso_identity=False, archive_class_details=False):
     """Scrape class results for a single show
     
     Args:
@@ -2880,6 +2946,9 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
         sleep_short: Short sleep duration in seconds (default: 0.5)
         sleep_medium: Medium sleep duration in seconds (default: 1)
         sleep_long: Long sleep duration in seconds (default: 3)
+        prefer_hso_identity: If True, overwrite Horse/Rider/Trainer on existing rows with HSO values
+        archive_class_details: If True, save each expanded class detail page under
+            horseshowsonline/{year}/classes/{show}/
     """
     print_with_timestamp(f"\n{'='*60}")
     print_with_timestamp(f"Scraping class results for ShowGUID: {show_guid} (Year: {year})")
@@ -2923,6 +2992,18 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                 except TimeoutException:
                     print_with_timestamp(f"  [WARNING] Page load timeout, attempting to continue...")
                     time.sleep(sleep_long)
+
+                try:
+                    save_hso_driver_page(
+                        driver,
+                        year,
+                        "showdetails",
+                        show_name or "show",
+                        show_guid=show_guid,
+                        extra_id=f"sl{show_list_id}",
+                    )
+                except Exception as archive_err:
+                    print_with_timestamp(f"  [WARNING] Failed to archive ShowDetails: {archive_err}")
                 
                 # Extract and update show details if missing
                 print_with_timestamp(f"  Extracting show details from page...")
@@ -3136,63 +3217,108 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
         print_with_timestamp(f"  Class column mapping: {class_column_map}")
         log_import_activity(conn, 'scrape_class_results.py', action='GRID_FOUND', 
                           additional_info=f'ShowGUID: {show_guid}, ShowListID: {show_list_id}, Column mapping: {class_column_map}')
-        
-        # Find all class summary rows
-        # Try multiple strategies to find data rows
+
+        # Find class summary rows BEFORE page_source archive. Serializing the full
+        # DevExpress DOM via driver.page_source has hung ChromeDriver on some shows
+        # (e.g. Sooner State 10359); row discovery must not depend on that call.
+        print_with_timestamp("  Locating class summary rows...")
         class_rows = []
-        
+
+        # Prefer JS query (returns WebElements; avoids hung Selenium CSS scans)
+        try:
+            class_rows = driver.execute_script(
+                """
+                var table = arguments[0];
+                if (!table) return [];
+                var rows = table.querySelectorAll("tr[id*='DXDataRow']");
+                var out = [];
+                for (var i = 0; i < rows.length; i++) {
+                    var id = rows[i].id || '';
+                    if (id.indexOf('Detail') !== -1) continue;
+                    out.push(rows[i]);
+                }
+                return out;
+                """,
+                grid,
+            ) or []
+            if class_rows:
+                print_with_timestamp(f"  [DEBUG] JS located {len(class_rows)} DXDataRow elements")
+        except Exception as js_err:
+            print_with_timestamp(f"  [DEBUG] JS DataRow lookup failed: {js_err}")
+            class_rows = []
+
         # Strategy 1: Look for rows with DataRow in ID
-        class_rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DataRow']")
-        
+        if not class_rows:
+            class_rows = grid.find_elements(By.CSS_SELECTOR, "tr[id*='DXDataRow'], tr[id*='DataRow']")
+
         # Strategy 2: Look for rows with dxgvDataRow class
         if not class_rows:
             class_rows = grid.find_elements(By.CSS_SELECTOR, "tr.dxgvDataRow")
-        
+
         # Strategy 3: Get all rows and filter intelligently
         if not class_rows:
             all_rows = grid.find_elements(By.TAG_NAME, "tr")
             for r in all_rows:
                 row_id = r.get_attribute('id') or ''
                 row_class = r.get_attribute('class') or ''
-                
+
                 # Exclude header, filter, footer, and detail rows
-                exclude_patterns = ['HeaderRow', 'FilterRow', 'FooterRow', 'DetailRow', 
-                                   'PagerBottomRow', 'GroupRow', 'dxgvHeaderRow', 
+                exclude_patterns = ['HeaderRow', 'HeadersRow', 'FilterRow', 'FooterRow', 'DetailRow',
+                                   'PagerBottomRow', 'GroupRow', 'dxgvHeaderRow',
                                    'dxgvFilterRow', 'dxgvFooterRow']
                 if any(pattern in row_id or pattern in row_class for pattern in exclude_patterns):
                     continue
-                
+
                 # Check for data row indicators
                 is_data_row = ('DataRow' in row_id or 'dxgvDataRow' in row_class or
                               'dxgv' in row_class.lower() and 'data' in row_class.lower())
-                
+
                 # Include rows that have data cells (at least 3 td elements, not th)
                 cells = r.find_elements(By.TAG_NAME, "td")
                 if len(cells) >= 3:
                     # Additional validation: check if this looks like a real data row
                     # Exclude rows that contain copyright, footer, or navigation text
                     row_text = r.text.lower()
-                    exclude_text = ['copyright', 'all rights reserved', 'privacy policy', 
+                    exclude_text = ['copyright', 'all rights reserved', 'privacy policy',
                                    'terms of service', 'contact', 'version', 'security alerts']
                     if any(exclude in row_text for exclude in exclude_text):
                         continue
-                    
+
                     # Check if the row has numeric data (like Entries column should have numbers)
                     # This helps filter out footer/header rows
                     has_numeric = any(cell.text.strip().isdigit() for cell in cells if cell.text.strip())
-                    
+
                     class_rows.append(r)
                 elif is_data_row and len(cells) >= 1:
                     # Even if fewer cells, if it's marked as a data row, include it (with same validation)
                     row_text = r.text.lower()
-                    exclude_text = ['copyright', 'all rights reserved', 'privacy policy', 
+                    exclude_text = ['copyright', 'all rights reserved', 'privacy policy',
                                    'terms of service', 'contact', 'version', 'security alerts']
                     if not any(exclude in row_text for exclude in exclude_text):
                         class_rows.append(r)
-        
+
         print_with_timestamp(f"  Found {len(class_rows)} class summary rows")
-        log_import_activity(conn, 'scrape_class_results.py', action='GRID_ROWS_FOUND', 
+        log_import_activity(conn, 'scrape_class_results.py', action='GRID_ROWS_FOUND',
                           additional_info=f'ShowGUID: {show_guid}, ShowListID: {show_list_id}, Rows found: {len(class_rows)}')
+
+        # Archive via JS outerHTML — driver.page_source has hung ChromeDriver on some
+        # ClassResults pages (Sooner State 10359) and blocked subsequent Selenium calls.
+        try:
+            html_content = driver.execute_script(
+                "return document.documentElement ? document.documentElement.outerHTML : '';"
+            ) or ""
+            if html_content:
+                save_hso_page(
+                    html_content,
+                    year,
+                    "classresults",
+                    show_name or "show",
+                    getattr(driver, "current_url", "") or "",
+                    show_guid=show_guid,
+                    extra_id=f"sl{show_list_id}",
+                )
+        except Exception as archive_err:
+            print_with_timestamp(f"  [WARNING] Failed to archive HSO ClassResults page: {archive_err}")
         
         # If show_class_ids is provided, skip PASS 1 and query database for class info
         if show_class_ids:
@@ -3723,7 +3849,7 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                     
                     # Row is expanded, now extract data immediately (before it gets collapsed by next expansion)
                     print_with_timestamp(f"    [DEBUG] Row {row_idx} expanded successfully, proceeding to extraction...")
-                    # Wait for detail grids to appear and load
+                    # Wait for detail grids to appear and load BEFORE archiving
                     try:
                         # Wait for placing grids to appear near this row
                         WebDriverWait(driver, 8).until(
@@ -3733,6 +3859,20 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                     except:
                         # If grids don't appear, wait a bit anyway
                         time.sleep(sleep_medium * 2)
+
+                    if archive_class_details:
+                        try:
+                            save_hso_driver_page(
+                                driver,
+                                year,
+                                "classdetail",
+                                show_name or "show",
+                                show_guid=show_guid,
+                                extra_id=f"sl{show_list_id}_class{show_class_id}_row{row_idx}",
+                                require_class_substance=True,
+                            )
+                        except Exception as archive_err:
+                            print_with_timestamp(f"    [WARNING] Failed to archive class detail: {archive_err}")
                     
                     # Extract data for this single row using JavaScript
                     try:
@@ -4046,7 +4186,10 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                                     cursor = conn.cursor()
                                     try:
                                         for entry_details in all_entry_details:
-                                            result = save_show_result_to_database(conn, show_class_id, entry_details, cursor=cursor, commit=False)
+                                            result = save_show_result_to_database(
+                                                conn, show_class_id, entry_details, cursor=cursor, commit=False,
+                                                prefer_hso_identity=prefer_hso_identity,
+                                            )
                                             if result:
                                                 saved_entries += 1
                                                 results_count += 1
@@ -4103,7 +4246,10 @@ def scrape_class_results_for_show(driver, show_list_id, show_guid, year, show_na
                                             cursor = conn.cursor()
                                             try:
                                                 for entry_details in all_nonplacing_details[:nonplacing_count]:
-                                                    result = save_show_result_to_database(conn, show_class_id, entry_details, cursor=cursor, commit=False)
+                                                    result = save_show_result_to_database(
+                                                        conn, show_class_id, entry_details, cursor=cursor, commit=False,
+                                                        prefer_hso_identity=prefer_hso_identity,
+                                                    )
                                                     if result:
                                                         saved_nonplacing += 1
                                                         results_count += 1

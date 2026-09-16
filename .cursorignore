@@ -3,3 +3,4 @@
 
 # Except the scheduled-run wrapper, which needs to stay editable
 !automation/*.ps1
+!scripts/*.ps1

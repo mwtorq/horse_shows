@@ -15,6 +15,8 @@ import time
 import pyodbc
 from datetime import datetime
 
+from hso_archive import save_hso_driver_page
+
 # Import necessary functions from scrape_class_results.py
 from scrape_class_results import (
     setup_driver,
@@ -86,6 +88,7 @@ def get_classes_with_nonplacing_entries(conn, start_from_show_guid=None):
                     GROUP BY ShowClassID
                 ) existing_counts ON existing_counts.ShowClassID = sc.ID
                 WHERE sl.ShowGUID IS NOT NULL AND sl.ShowGUID != ''
+                AND sl.Year <> 2014
                 AND sl.StartDate IS NOT NULL
                 AND CAST(sl.EndDate AS DATE) < CAST(GETDATE() AS DATE)
                 AND sc.Entries IS NOT NULL
@@ -119,6 +122,7 @@ def get_classes_with_nonplacing_entries(conn, start_from_show_guid=None):
                     GROUP BY ShowClassID
                 ) existing_counts ON existing_counts.ShowClassID = sc.ID
                 WHERE sl.ShowGUID IS NOT NULL AND sl.ShowGUID != ''
+                AND sl.Year <> 2014
                 AND sl.StartDate IS NOT NULL
                 AND CAST(sl.EndDate AS DATE) < CAST(GETDATE() AS DATE)
                 AND sc.Entries IS NOT NULL
@@ -1264,6 +1268,18 @@ def scrape_nonplacing_results_for_show(driver, show_list_id, show_guid, year, sh
         if not grid:
             print_with_timestamp(f"  [WARNING] Could not find results grid for ShowGUID: {show_guid}")
             return driver, 0
+
+        try:
+            save_hso_driver_page(
+                driver,
+                year,
+                "classresults",
+                show_name or "show",
+                show_guid=show_guid,
+                extra_id=f"sl{show_list_id}_nonplacing",
+            )
+        except Exception as archive_err:
+            print_with_timestamp(f"  [WARNING] Failed to archive HSO ClassResults page: {archive_err}")
         
         # Get column mapping for class summary (to find row indices)
         class_column_map = get_column_indices_for_class_grid(grid)

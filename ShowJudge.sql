@@ -1,0 +1,8 @@
+SELECT [ID]
+      ,[ShowListID]
+      ,[JudgeName]
+      ,[JudgeRole]
+      ,[SortOrder]
+      ,[CreatedDate]
+      ,[UpdatedDate]
+  FROM [HorseShows].[sResults].[ShowJudge]

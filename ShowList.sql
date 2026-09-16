@@ -1,16 +1,19 @@
 SELECT [ID]
-      ,[Year]
-      ,[ShowName]
-      ,[StartDate]
-      ,[EndDate]
-      ,[ShowDate]
-      ,[ShowLocation]
-      ,[StateProv]
-      ,[GoverningBody]
-      ,[ShowGUID]
-      ,[CreatedDate]
-      ,[UpdatedDate]
-  FROM [HorseShows].[sResults].[ShowList]
+        ,[Year]
+        ,[ShowName]
+        ,[StartDate]
+        ,[EndDate]
+        ,[ShowDate]
+        ,[ShowLocation]
+        ,[StateProv]
+        ,[GoverningBody]
+        ,[ShowGUID]
+        ,[SHRShowID]
+        ,[CreatedDate]
+        ,[UpdatedDate]
+    FROM [HorseShows].[sResults].[ShowList] WHERE UpdatedDate>='2026-09-13' order by UpdatedDate
+
+    SELECT * FROM [HorseShows].[sResults].[ShowList] WHERE Year>='2026' ORDER BY Year,ShowDate
 
   select * from [HorseShows].[sResults].[ShowList] where showname like '%st%louis%kick%off%' and year=2025 --207
   select * from [HorseShows].[sResults].[ShowList] where showname like '%monarch%' and year=2025 --258
