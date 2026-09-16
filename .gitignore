@@ -4,9 +4,7 @@ __pycache__/**
 # ResultsAutomation by default; ignore any accidental local copy).
 *.cred
 
-# Scraped page archives (multi-GB); keep local only.
-horseshowsonline/
-saddlehorsereport/
+# Local rebuild snapshots / scratch
 merge_rebuild_snapshots/
 
 # Local scratch / debug capture under scripts/
