@@ -13,6 +13,35 @@ BEGIN
 END
 GO
 
+-- SHR High Point System show badge (Single/Double/Triple/Quadruple)
+IF NOT EXISTS (
+    SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = 'sResults' AND TABLE_NAME = 'ShowList' AND COLUMN_NAME = 'HPSLabel'
+)
+BEGIN
+    ALTER TABLE sResults.ShowList ADD HPSLabel NVARCHAR(100) NULL;
+END
+GO
+
+IF NOT EXISTS (
+    SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = 'sResults' AND TABLE_NAME = 'ShowList' AND COLUMN_NAME = 'HPSMultiplier'
+)
+BEGIN
+    ALTER TABLE sResults.ShowList ADD HPSMultiplier TINYINT NULL;
+END
+GO
+
+-- Per-class SHR High Point category (e.g. Open Five-Gaited)
+IF NOT EXISTS (
+    SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = 'sResults' AND TABLE_NAME = 'ShowClass' AND COLUMN_NAME = 'HPSCategory'
+)
+BEGIN
+    ALTER TABLE sResults.ShowClass ADD HPSCategory NVARCHAR(200) NULL;
+END
+GO
+
 -- Pedigree fields from horse detail pages
 IF NOT EXISTS (
     SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS

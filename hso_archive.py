@@ -136,27 +136,53 @@ def save_hso_page(
         f.write(html_content)
     with open(raw_path, "w", encoding="utf-8") as f:
         f.write(build_hso_raw_text(html_content, source_url, label))
-    print_with_timestamp(f"  Saved HSO HTML {html_path}")
+    print_with_timestamp(f"  Saved HSO HTML+raw ({len(html_content)} chars) {html_path}")
     return html_path
 
 
-def driver_html_snapshot(driver) -> str:
-    """Capture page HTML without driver.page_source.
+def driver_html_snapshot(driver, chunk_size: int = 262144) -> str:
+    """Capture the complete page HTML without hanging ChromeDriver.
 
-    Selenium's page_source has hung ChromeDriver mid-scrape on some DevExpress
-    ClassResults/classdetail pages; documentElement.outerHTML is safer.
+    Building/returning multi‑MB outerHTML in one WebDriver round-trip has wedged
+    chromedriver for 40+ minutes. Materialize once in-page, then pull in chunks.
+    Never uses driver.page_source (also a known hang).
+    Writes are still the full document — suitable for disk replay.
     """
     try:
-        html = driver.execute_script(
-            "return document.documentElement ? document.documentElement.outerHTML : '';"
+        length = driver.execute_script(
+            """
+            try { delete window.__hsoSnap; } catch (e) {}
+            window.__hsoSnap = document.documentElement
+                ? document.documentElement.outerHTML : '';
+            return window.__hsoSnap.length;
+            """
         )
-        if html:
-            return html
+        if not length:
+            return ""
+        parts = []
+        offset = 0
+        while offset < length:
+            end = min(offset + chunk_size, int(length))
+            chunk = driver.execute_script(
+                "return window.__hsoSnap.substring(arguments[0], arguments[1]);",
+                offset,
+                end,
+            )
+            if chunk is None:
+                break
+            parts.append(chunk)
+            offset = end
+        try:
+            driver.execute_script("window.__hsoSnap = null;")
+        except Exception:
+            pass
+        return "".join(parts)
     except Exception as e:
-        print_with_timestamp(f"  [WARNING] outerHTML snapshot failed ({e}); falling back to page_source")
-    try:
-        return driver.page_source or ""
-    except Exception:
+        print_with_timestamp(f"  [WARNING] chunked HTML snapshot failed ({e})")
+        try:
+            driver.execute_script("window.__hsoSnap = null;")
+        except Exception:
+            pass
         return ""
 
 
@@ -168,7 +194,10 @@ def save_hso_driver_page(
     show_guid: Optional[str] = None,
     extra_id: Optional[str] = None,
     require_class_substance: bool = False,
+    class_row_id: Optional[str] = None,  # unused; kept for call-site compat
 ) -> Optional[str]:
+    """Archive complete page HTML + *_raw.txt for disk replay (never hits HSO again)."""
+    del class_row_id  # complete page only — no scoped/partial archives
     return save_hso_page(
         driver_html_snapshot(driver),
         year,

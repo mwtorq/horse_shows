@@ -595,6 +595,22 @@ def main() -> None:
                     skip_recapture=args.skip_recapture,
                     no_class_archives=args.no_class_archives,
                 )
+                # Fresh Chrome between shows — long archive sessions poison ChromeDriver
+                if need_driver and driver is not None and idx < len(shows):
+                    try:
+                        print_with_timestamp("  Recycling browser before next show...")
+                        try:
+                            from scrape_class_results import force_kill_chromedriver, write_rebuild_heartbeat
+                            write_rebuild_heartbeat(f"show_complete sl={sl_id}")
+                            force_kill_chromedriver(driver)
+                        except Exception:
+                            try:
+                                driver.quit()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                    driver = setup_driver(headless=not args.headed)
             except Exception as e:
                 print_with_timestamp(f"  [ERROR] {e}")
                 import traceback

@@ -9,9 +9,11 @@ SELECT [ID]
         ,[GoverningBody]
         ,[ShowGUID]
         ,[SHRShowID]
+        ,[HPSLabel]
+        ,[HPSMultiplier]
         ,[CreatedDate]
         ,[UpdatedDate]
-    FROM [HorseShows].[sResults].[ShowList] WHERE UpdatedDate>='2026-09-13' order by UpdatedDate
+    FROM [HorseShows].[sResults].[ShowList] (NOLOCK) WHERE UpdatedDate>='2026-09-13' order by UpdatedDate
 
     SELECT * FROM [HorseShows].[sResults].[ShowList] WHERE Year>='2026' ORDER BY Year,ShowDate
 
