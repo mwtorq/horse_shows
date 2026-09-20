@@ -14,6 +14,8 @@ $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
 $repo = Split-Path -Parent $here
 $register = Join-Path $here 'Register-HorseShowsPbixRefreshTask.ps1'
+$simple = Join-Path $here 'Refresh-HorseShowsPbix-Simple.ps1'
+$runCmdRepo = Join-Path $here 'Run-PbixRefresh.cmd'
 $launchDir = if ($env:RESULTS_AUTOMATION_HOME) {
     Join-Path $env:RESULTS_AUTOMATION_HOME 'HorseShowsPbixRefresh'
 } else {
@@ -21,13 +23,12 @@ $launchDir = if ($env:RESULTS_AUTOMATION_HOME) {
 }
 
 Write-Host "Repo:     $repo"
-Write-Host "Register: $register"
+Write-Host "Simple:   $simple"
 Write-Host "Launcher: $launchDir"
 Write-Host ''
 
-if (-not (Test-Path -LiteralPath $register)) {
-    throw "Register script missing."
-}
+if (-not (Test-Path -LiteralPath $simple)) { throw "Missing $simple" }
+if (-not (Test-Path -LiteralPath $register)) { throw "Register script missing." }
 
 Set-Location -LiteralPath $repo
 
@@ -37,18 +38,12 @@ if (-not $SkipRegister) {
     Write-Host ''
 }
 
-$refresh = Join-Path $launchDir 'Refresh.ps1'
-$runCmd = Join-Path $launchDir 'Run.cmd'
-if (-not (Test-Path -LiteralPath $refresh)) {
-    throw "Refresh.ps1 missing at $refresh - registration did not install the launcher."
-}
-
 if ($InvokeNow) {
-    Write-Host "=== Running $refresh in this session ==="
-    & $refresh
+    Write-Host "=== Running $simple in this session ==="
+    & $simple
     Write-Host ''
 }
 
 Write-Host 'Done.'
-Write-Host "  Double-click: $runCmd"
-Write-Host "  Or: powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$refresh`""
+Write-Host "  Double-click: $runCmdRepo"
+Write-Host "  Or:           $(Join-Path $launchDir 'Run.cmd')"

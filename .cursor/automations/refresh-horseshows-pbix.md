@@ -2,47 +2,40 @@
 
 ## What it does
 
-1. Opens `PowerBI\HorseShows.pbix` in Power BI Desktop (`cmd start`, handles OneDrive spaces)
-2. Sends **Home → Refresh** (Alt+H, R)
-3. Waits, then **Ctrl+S**
-4. Leaves Power BI open
+1. Opens `PowerBI\HorseShows.pbix` in Power BI Desktop (`cmd start`, OneDrive-safe)
+2. Waits for the real main window (`SetForegroundWindow`)
+3. Sends **Home -> Refresh** (Alt+H, R), waits, **Ctrl+S**
+4. Leaves Power BI open; warns if the `.pbix` timestamp did not change
 
-No Cursor agent. No TOM / Analysis Services scripting.
+No Cursor agent. No TOM.
 
-## Install (paste into Windows PowerShell)
-
-Paste the contents of `automation/PASTE_TO_INSTALL.ps1`.
-
-That writes:
-
-- `C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\Refresh.ps1`
-- `C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\Run.cmd`
-- scheduled task `\ResultsAutomation\ResultsAutomation - Horse Shows PBIX Refresh`
-
-Then it **runs the refresh in that same PowerShell window** (needed for SendKeys).
-
-## Run once
+## Fastest manual run (after `git pull`)
 
 Double-click:
 
 ```text
-C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\Run.cmd
+...\repos\horse_shows\automation\Run-PbixRefresh.cmd
 ```
 
-Or:
+Or in PowerShell (from that folder is fine; in-process is best):
 
 ```text
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\Refresh.ps1
+cd "C:\Users\mw\OneDrive - timberwilde.net\repos\horse_shows\automation"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Refresh-HorseShowsPbix-Simple.ps1
 ```
-
-Do **not** rely on Task Scheduler → Run for a manual test; use `Run.cmd` so SendKeys hits your desktop.
-
-If an old Cursor-agent task still fires, `Run-HorseShowsPbixRefreshAgent.ps1` is now a shim that calls the same `Refresh.ps1`. Re-paste `PASTE_TO_INSTALL.ps1` so leftover `Run.ps1` launchers are overwritten.
 
 Log: `C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\refresh.log`
 
+## Install the 8-hour task
+
+Paste `automation/PASTE_TO_INSTALL.ps1` into Windows PowerShell (after `git pull`).
+
+That copies the simple script to `C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\Refresh.ps1`
+(no spaces for Task Scheduler `-File`) and registers the task, then runs once in that window.
+
 ## Requirements
 
-- Interactive Windows logon (SendKeys needs a desktop session)
-- Real `.pbix` on disk (~442 MB), not a Git LFS pointer
+- Interactive Windows logon (SendKeys needs your desktop)
+- Real `.pbix` on disk (~442 MB), not a Git LFS pointer / OneDrive stub
 - English Power BI Desktop ribbon keytips (Alt+H, R)
+- Do not use Task Scheduler -> Run for a first test; use `Run-PbixRefresh.cmd`
