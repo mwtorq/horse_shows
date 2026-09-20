@@ -1,11 +1,10 @@
 <#
 .SYNOPSIS
-    One-shot enable + smoke test for the HorseShows.pbix 8-hour refresh task.
+    One-shot enable + run for the HorseShows.pbix 8-hour refresh task.
 #>
 [CmdletBinding()]
 param(
     [switch]$SkipRegister,
-    [switch]$SkipDryRun,
     [switch]$InvokeNow
 )
 
@@ -27,35 +26,29 @@ Write-Host "Launcher: $launchDir"
 Write-Host ''
 
 if (-not (Test-Path -LiteralPath $register)) {
-    throw "Register script missing. Checkout branch cursor/horseshows-pbix-refresh-automation first."
+    throw "Register script missing."
 }
 
 Set-Location -LiteralPath $repo
 
 if (-not $SkipRegister) {
-    Write-Host '=== Re-registering scheduled task (space-free ResultsAutomation launcher) ==='
+    Write-Host '=== Re-registering scheduled task ==='
     & $register -Force
     Write-Host ''
 }
 
-if (-not $SkipDryRun) {
-    $dry = Join-Path $launchDir 'DryRun.ps1'
-    if (-not (Test-Path -LiteralPath $dry)) {
-        throw "DryRun.ps1 missing at $dry — registration did not install the launcher."
-    }
-    Write-Host "=== Dry-run via $dry ==="
-    $p = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File', $dry) -Wait -PassThru -NoNewWindow
-    if ($p.ExitCode -ne 0) { throw "Dry-run failed with exit $($p.ExitCode)" }
-    Write-Host ''
-    Write-Host 'Dry-run succeeded. Path quoting is OK.'
+$refresh = Join-Path $launchDir 'Refresh.ps1'
+$runCmd = Join-Path $launchDir 'Run.cmd'
+if (-not (Test-Path -LiteralPath $refresh)) {
+    throw "Refresh.ps1 missing at $refresh — registration did not install the launcher."
 }
 
 if ($InvokeNow) {
-    Write-Host '=== Starting scheduled task now ==='
-    Start-ScheduledTask -TaskPath '\ResultsAutomation\' -TaskName 'ResultsAutomation - Horse Shows PBIX Refresh'
-    Write-Host 'Started.'
+    Write-Host "=== Running $refresh in this session ==="
+    & $refresh
+    Write-Host ''
 }
 
-Write-Host ''
-Write-Host 'Done. Real refresh:'
-Write-Host ("  powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"{0}`"" -f (Join-Path $launchDir 'Run.ps1'))
+Write-Host 'Done.'
+Write-Host "  Double-click: $runCmd"
+Write-Host "  Or: powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$refresh`""

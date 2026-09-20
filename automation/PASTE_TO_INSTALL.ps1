@@ -107,6 +107,16 @@ Write-Log '---- refresh done (Desktop left open) ----'
 $refreshPath = Join-Path $dir 'Refresh.ps1'
 Set-Content -LiteralPath $refreshPath -Value $refreshPs1 -Encoding ASCII
 
+# Double-click this to run now. Stays in ResultsAutomation (no OneDrive -File).
+$runCmd = @"
+@echo off
+cd /d "%~dp0"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Refresh.ps1"
+exit /b %ERRORLEVEL%
+"@
+$runCmdPath = Join-Path $dir 'Run.cmd'
+Set-Content -LiteralPath $runCmdPath -Value $runCmd -Encoding ASCII
+
 $action = New-ScheduledTaskAction `
     -Execute 'powershell.exe' `
     -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$refreshPath`"" `
@@ -131,8 +141,10 @@ Register-ScheduledTask `
     -Force | Out-Null
 
 Write-Host "Installed: $refreshPath"
-Write-Host "Task: $taskPath$taskName every 8 hours"
+Write-Host "Run now:   $runCmdPath"
+Write-Host "Task:      $taskPath$taskName every 8 hours"
 Write-Host ''
-Write-Host 'Run once now? Starting...'
-Start-ScheduledTask -TaskPath $taskPath -TaskName $taskName
-Write-Host 'Started. Watch Power BI Desktop and C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\refresh.log'
+Write-Host 'Running refresh in THIS PowerShell window (SendKeys needs your desktop)...'
+# Run in-session so SendKeys can reach Power BI. Do not queue the scheduled task for this first run.
+& $refreshPath
+Write-Host "Done. Log: $(Join-Path $dir 'refresh.log')"

@@ -3,11 +3,14 @@
     Install a simple 8-hour HorseShows.pbix refresh (open → Refresh → Save).
 
 .DESCRIPTION
-    Writes C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\Refresh.ps1 and
-    registers scheduled task \ResultsAutomation\ResultsAutomation - Horse Shows PBIX Refresh.
+    Writes C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\Refresh.ps1 + Run.cmd
+    and registers scheduled task \ResultsAutomation\ResultsAutomation - Horse Shows PBIX Refresh.
 
     No Cursor agent. No Analysis Services / TOM. The scheduled task only ever
     uses -File against the ResultsAutomation path (no spaces).
+
+    -InvokeNow runs Refresh.ps1 in the current interactive session (not via
+    Start-ScheduledTask), so SendKeys can reach Power BI Desktop.
 #>
 [CmdletBinding()]
 param(
@@ -48,6 +51,7 @@ if (-not (Test-Path -LiteralPath $Pbix)) { throw "Missing $Pbix" }
 
 New-Item -ItemType Directory -Force -Path $LaunchDir | Out-Null
 $refreshPath = Join-Path $LaunchDir 'Refresh.ps1'
+$runCmdPath = Join-Path $LaunchDir 'Run.cmd'
 $pbixLiteral = $Pbix.Replace("'", "''")
 $logLiteral = (Join-Path $LaunchDir 'refresh.log').Replace("'", "''")
 
@@ -118,6 +122,14 @@ $lines = @(
 )
 Set-Content -LiteralPath $refreshPath -Value $lines -Encoding ASCII
 
+$runCmd = @(
+    '@echo off'
+    'cd /d "%~dp0"'
+    'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Refresh.ps1"'
+    'exit /b %ERRORLEVEL%'
+) -join "`r`n"
+Set-Content -LiteralPath $runCmdPath -Value $runCmd -Encoding ASCII
+
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$refreshPath`"" -WorkingDirectory $LaunchDir
 $trigger = New-ScheduledTaskTrigger -Once -At $At -RepetitionInterval (New-TimeSpan -Hours $RepeatHours)
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 2) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
@@ -126,8 +138,11 @@ $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" 
 Register-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description 'Every 8 hours: open HorseShows.pbix, ribbon Refresh, Save. Leaves Desktop open.' -Force | Out-Null
 
 Write-Host "Installed $refreshPath"
+Write-Host "Run now:  $runCmdPath"
 Write-Host "Task $TaskPath$TaskName every $RepeatHours hour(s) from $($At.ToString('t'))"
 if ($InvokeNow) {
-    Start-ScheduledTask -TaskPath $TaskPath -TaskName $TaskName
-    Write-Host "Started. Log: $(Join-Path $LaunchDir 'refresh.log')"
+    Write-Host 'Running refresh in this session (SendKeys needs your desktop)...'
+    # Run in-session so SendKeys can reach Power BI. Do not queue the scheduled task for this first run.
+    & $refreshPath
+    Write-Host "Done. Log: $(Join-Path $LaunchDir 'refresh.log')"
 }
