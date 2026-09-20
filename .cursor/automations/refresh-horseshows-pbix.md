@@ -10,33 +10,27 @@ Use the text in `automation/HorseShowsPbixRefresh.prompt.txt` unchanged.
 
 ## Enable on the Windows machine
 
-1. Clone / update the repo with Git LFS and pull the pbix:
+The fix lives on branch `cursor/horseshows-pbix-refresh-automation` until the PR
+is merged. A plain `git pull` on `main` will not pick it up.
 
-   ```powershell
-   Set-Location 'C:\Users\mw\OneDrive - timberwilde.net\repos\horse_shows'
-   git pull
-   git lfs pull --include="PowerBI/HorseShows.pbix"
-   ```
+```powershell
+Set-Location 'C:\Users\mw\OneDrive - timberwilde.net\repos\horse_shows'
+git fetch origin
+git checkout cursor/horseshows-pbix-refresh-automation
+git pull
+& .\automation\Enable-HorseShowsPbixRefresh.ps1
+```
 
-2. Install Cursor CLI if needed (`irm 'https://cursor.com/install?win32=true' | iex`) and sign in, or set `CURSOR_API_KEY`.
+That re-registers the task with a space-safe `-Command` action and runs a dry-run.
+Do **not** use `powershell -File C:\Users\mw\OneDrive - ...` (unquoted OneDrive path).
 
-3. Register the 8-hour task from **inside** that repo session (avoids `powershell -File` path splitting):
+For a real refresh after the dry-run looks good:
 
-   ```powershell
-   Set-Location 'C:\Users\mw\OneDrive - timberwilde.net\repos\horse_shows'
-   & .\automation\Register-HorseShowsPbixRefreshTask.ps1 -InvokeNow
-   ```
+```powershell
+& .\automation\Run-HorseShowsPbixRefreshAgent.ps1 -SkipAgent
+```
 
-   Or from cmd.exe / Explorer:
-
-   ```text
-   automation\Register-HorseShowsPbixRefreshTask.cmd -InvokeNow
-   ```
-
-   Do **not** run an unquoted
-   `powershell -File C:\Users\mw\OneDrive - timberwilde.net\...`.
-   Task Scheduler also cannot use `-File "path with spaces"` reliably; the
-   register script now uses `-Command "& '...'"` for the task action.
+Or from cmd.exe: `automation\Run-HorseShowsPbixRefreshAgent.cmd -SkipAgent`
 
 4. Optional in-session loop while Cursor stays open:
 
