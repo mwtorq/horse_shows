@@ -1,56 +1,44 @@
 <#
 .SYNOPSIS
-    Compatibility shim: old Cursor-agent task now runs the simple SendKeys refresh.
+    Compatibility shim: old Cursor-agent task runs the simple SendKeys refresh.
 
 .DESCRIPTION
-    The previous agent/TOM path failed on Windows PowerShell (encoding, OneDrive
-    -File quoting, missing Cursor CLI). This script now only launches:
-
-      C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\Refresh.ps1
-
-    If that file is missing, it installs it via Register-HorseShowsPbixRefreshTask.ps1
-    first. Prefer double-clicking Run.cmd or pasting PASTE_TO_INSTALL.ps1.
+    Calls automation\Refresh-HorseShowsPbix-Simple.ps1 in-process from this repo.
+    Does not require ResultsAutomation to already exist. Does not use Cursor CLI
+    or TOM. Prefer automation\Run-PbixRefresh.cmd for manual runs.
 #>
 [CmdletBinding()]
 param(
-    [switch]$SkipAgent,   # kept for old callers; ignored
-    [switch]$DryRun,      # prints path only; does not refresh
+    [switch]$SkipAgent,
+    [switch]$DryRun,
+    [switch]$QuickTest,
     [ValidateRange(5, 180)]
-    [int]$TimeoutMinutes = 90  # kept for old callers; ignored by simple refresh
+    [int]$TimeoutMinutes = 90
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$LaunchDir = if ($env:RESULTS_AUTOMATION_HOME) {
-    Join-Path $env:RESULTS_AUTOMATION_HOME 'HorseShowsPbixRefresh'
-} else {
-    'C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh'
+$Simple = Join-Path $PSScriptRoot 'Refresh-HorseShowsPbix-Simple.ps1'
+if (-not (Test-Path -LiteralPath $Simple)) {
+    throw "Missing $Simple - git pull on branch/main that includes the simple refresh."
 }
-$RefreshPath = Join-Path $LaunchDir 'Refresh.ps1'
-$Register = Join-Path $PSScriptRoot 'Register-HorseShowsPbixRefreshTask.ps1'
 
-Write-Host ("{0:yyyy-MM-dd HH:mm:ss} [INFO] Deprecated agent entrypoint -> simple refresh" -f (Get-Date))
-Write-Host ("{0:yyyy-MM-dd HH:mm:ss} [INFO] Target: {1}" -f (Get-Date), $RefreshPath)
+Write-Host ("{0:yyyy-MM-dd HH:mm:ss} [INFO] Agent shim -> {1}" -f (Get-Date), $Simple)
 
 if ($DryRun) {
-    Write-Host ("{0:yyyy-MM-dd HH:mm:ss} [INFO] Dry run: would execute {1}" -f (Get-Date), $RefreshPath)
+    Write-Host ("{0:yyyy-MM-dd HH:mm:ss} [INFO] Dry run OK (would run simple refresh)" -f (Get-Date))
     exit 0
 }
 
-if (-not (Test-Path -LiteralPath $RefreshPath)) {
-    Write-Host ("{0:yyyy-MM-dd HH:mm:ss} [WARN] Refresh.ps1 missing; installing via Register..." -f (Get-Date))
-    if (-not (Test-Path -LiteralPath $Register)) {
-        throw "Missing $Register and $RefreshPath. Paste automation/PASTE_TO_INSTALL.ps1 first."
-    }
-    & $Register -Force
-}
+$params = @{}
+if ($QuickTest) { $params['QuickTest'] = $true }
 
-if (-not (Test-Path -LiteralPath $RefreshPath)) {
-    throw "Refresh.ps1 still missing at $RefreshPath after register."
+# In-process: no powershell -File against OneDrive; SendKeys uses this desktop session.
+& $Simple @params
+$code = $LASTEXITCODE
+if ($null -eq $code) { $code = 0 }
+if ($code -ne 0) {
+    Write-Host ("{0:yyyy-MM-dd HH:mm:ss} [ERROR] Simple refresh exit {1}" -f (Get-Date), $code)
 }
-
-# In-process so SendKeys hits this interactive desktop session.
-& $RefreshPath
-$code = if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } else { 0 }
-exit $code
+exit [int]$code

@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the simple HorseShows.pbix 8-hour refresh installers.
-
-Does not refresh the pbix (needs Windows + Power BI Desktop). Checks that
-paste/register wiring stays consistent: ResultsAutomation Refresh.ps1 + Run.cmd,
-interactive scheduled task, no OneDrive -File, in-session InvokeNow.
-"""
+"""Validate the simple HorseShows.pbix 8-hour refresh installers."""
 from __future__ import annotations
 
 import os
@@ -20,6 +15,9 @@ REQUIRED = [
     REPO / "automation" / "Register-HorseShowsPbixRefreshTask.ps1",
     REPO / "automation" / "Register-HorseShowsPbixRefreshTask.cmd",
     REPO / "automation" / "Enable-HorseShowsPbixRefresh.ps1",
+    REPO / "automation" / "Refresh-HorseShowsPbix-Simple.ps1",
+    REPO / "automation" / "Run-PbixRefresh.cmd",
+    REPO / "automation" / "Run-HorseShowsPbixRefreshAgent.ps1",
     REPO / ".cursor" / "automations" / "refresh-horseshows-pbix.md",
 ]
 
@@ -40,47 +38,61 @@ def main() -> None:
     register = (REPO / "automation" / "Register-HorseShowsPbixRefreshTask.ps1").read_text(
         encoding="utf-8"
     )
-    enable = (REPO / "automation" / "Enable-HorseShowsPbixRefresh.ps1").read_text(encoding="utf-8")
+    agent = (REPO / "automation" / "Run-HorseShowsPbixRefreshAgent.ps1").read_text(
+        encoding="utf-8"
+    )
+    simple = (REPO / "automation" / "Refresh-HorseShowsPbix-Simple.ps1").read_text(
+        encoding="utf-8"
+    )
     docs = (REPO / ".cursor" / "automations" / "refresh-horseshows-pbix.md").read_text(
         encoding="utf-8"
     )
+    run_cmd = (REPO / "automation" / "Run-PbixRefresh.cmd").read_text(encoding="utf-8")
 
-    for label, text in (("PASTE", paste), ("Register", register)):
-        if "ResultsAutomation" not in text or "Refresh.ps1" not in text:
-            fail(f"{label} must install ResultsAutomation\\HorseShowsPbixRefresh\\Refresh.ps1")
-        if "Run.cmd" not in text:
-            fail(f"{label} must install Run.cmd")
-        if "SendWait" not in text and "SendKeys" not in text:
-            fail(f"{label} must drive Power BI via SendKeys")
-        if "cmd.exe" not in text or "start" not in text.lower():
-            fail(f"{label} must open the pbix via cmd start")
-        if "LogonType Interactive" not in text:
-            fail(f"{label} must register an interactive logon task")
-        if "IgnoreNew" not in text:
-            fail(f"{label} must IgnoreNew overlapping runs")
-        # Manual run must execute in-session; Start-ScheduledTask breaks SendKeys.
-        if re.search(r"if\s*\(\$?InvokeNow\)[\s\S]*Start-ScheduledTask", text) or (
-            label == "PASTE" and "Start-ScheduledTask" in text
-        ):
-            fail(f"{label} must not use Start-ScheduledTask for the immediate run")
-        if "& $refreshPath" not in text and "& $refresh" not in text:
-            fail(f"{label} must invoke Refresh.ps1 in-session for run-now")
+    if "Refresh-HorseShowsPbix-Simple.ps1" not in paste:
+        fail("PASTE must copy Refresh-HorseShowsPbix-Simple.ps1")
+    if "Copy-Item" not in paste:
+        fail("PASTE must Copy-Item the simple script into ResultsAutomation")
+    if "Start-ScheduledTask" in paste:
+        fail("PASTE must not use Start-ScheduledTask for the immediate run")
+    if "& $src" not in paste:
+        fail("PASTE must run simple script in-session")
 
     if not re.search(r"\$RepeatHours\s*=\s*8\b", register):
         fail("scheduled task default is not every 8 hours")
-    if "DryRun.ps1" in enable or "Run.ps1" in enable:
-        fail("Enable must not reference removed DryRun.ps1 / Run.ps1")
-    if "Refresh.ps1" not in enable or "Run.cmd" not in enable:
-        fail("Enable must point at Refresh.ps1 / Run.cmd")
-    if "Run.cmd" not in docs or "Refresh.ps1" not in docs:
-        fail("automation doc must document Run.cmd and Refresh.ps1")
+    if "Refresh-HorseShowsPbix-Simple.ps1" not in register or "Copy-Item" not in register:
+        fail("Register must copy Refresh-HorseShowsPbix-Simple.ps1")
+    if "LogonType Interactive" not in register:
+        fail("Register must use interactive logon")
+    if "IgnoreNew" not in register:
+        fail("Register must IgnoreNew overlapping runs")
+    if "Start-ScheduledTask" in register:
+        fail("Register must not Start-ScheduledTask for InvokeNow")
 
-    agent = (REPO / "automation" / "Run-HorseShowsPbixRefreshAgent.ps1").read_text(encoding="utf-8")
-    if "ResultsAutomation" not in agent or "Refresh.ps1" not in agent:
-        fail("agent shim must delegate to ResultsAutomation Refresh.ps1")
-    if "Refresh-HorseShowsPbix.ps1" in agent and "Invoke-DirectRefresh" in agent:
-        fail("agent shim must not call the old TOM refresh path")
+    if "Refresh-HorseShowsPbix-Simple.ps1" not in agent:
+        fail("agent shim must call Refresh-HorseShowsPbix-Simple.ps1")
+    if "Refresh-HorseShowsPbix.ps1" in agent.split("SYNOPSIS", 1)[-1] and "TOM" in agent:
+        pass  # description may mention old path
+    if "Invoke-DirectRefresh" in agent or "& $refreshScript" in agent:
+        fail("agent must not call old TOM refresh")
+
+    for needle in (
+        "SetForegroundWindow",
+        "SendWait",
+        "cmd.exe",
+        "LastWriteTimeUtc",
+        "PBIDesktop",
+    ):
+        if needle not in simple:
+            fail(f"simple refresh missing {needle!r}")
+
+    if "Refresh-HorseShowsPbix-Simple.ps1" not in run_cmd:
+        fail("Run-PbixRefresh.cmd must launch the simple script")
+    if "Run-PbixRefresh.cmd" not in docs:
+        fail("docs must mention Run-PbixRefresh.cmd")
+
     for ps1_name in (
+        "Refresh-HorseShowsPbix-Simple.ps1",
         "Refresh-HorseShowsPbix.ps1",
         "Run-HorseShowsPbixRefreshAgent.ps1",
         "Enable-HorseShowsPbixRefresh.ps1",
@@ -89,20 +101,19 @@ def main() -> None:
     ):
         raw = (REPO / "automation" / ps1_name).read_bytes()
         if any(b > 127 for b in raw):
-            fail(f"{ps1_name} must be ASCII-only (Windows PowerShell 5.1 misparses UTF-8 em-dashes)")
+            fail(f"{ps1_name} must be ASCII-only")
 
     pbix = REPO / "PowerBI" / "HorseShows.pbix"
     first_line = pbix.read_text(encoding="utf-8", errors="replace").splitlines()[0]
     if pbix.stat().st_size < 1024 and first_line.startswith("version https://git-lfs.github.com/"):
         print("NOTE: PowerBI/HorseShows.pbix is a Git LFS pointer in this checkout.")
-        print('      On the Windows machine run: git lfs pull --include="PowerBI/HorseShows.pbix"')
 
     print("OK: simple HorseShows.pbix refresh installers are consistent.")
-    print("    interval: 8 hours")
-    print("    launcher: ResultsAutomation\\HorseShowsPbixRefresh\\Refresh.ps1")
-    print("    run now:  ResultsAutomation\\HorseShowsPbixRefresh\\Run.cmd")
-    print(f"    cwd:      {REPO}")
-    print(f"    os:       {os.name}")
+    print("    manual:  automation/Run-PbixRefresh.cmd")
+    print("    script:  automation/Refresh-HorseShowsPbix-Simple.ps1")
+    print("    task:    ResultsAutomation\\HorseShowsPbixRefresh\\Refresh.ps1")
+    print(f"    cwd:     {REPO}")
+    print(f"    os:      {os.name}")
 
 
 if __name__ == "__main__":
