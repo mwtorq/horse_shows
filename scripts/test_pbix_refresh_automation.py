@@ -69,12 +69,10 @@ def main() -> None:
     )
     if not re.search(r"\$RepeatHours\s*=\s*8\b", register):
         fail("scheduled task default is not every 8 hours")
-    if "Run-HorseShowsPbixRefreshAgent.ps1" not in register:
-        fail("scheduled task does not launch the Cursor agent runner")
+    if "Refresh-HorseShowsPbix.ps1" not in register:
+        fail("scheduled task does not reference Refresh-HorseShowsPbix.ps1")
     if "HorseShowsPbixRefresh" not in register or "Run.ps1" not in register:
         fail("scheduled task must install/use space-free ResultsAutomation\\HorseShowsPbixRefresh\\Run.ps1")
-    if r".\Refresh-HorseShowsPbix.ps1" in register.split("New-ScheduledTaskAction")[-1] if "New-ScheduledTaskAction" in register else "":
-        pass
     if "PBIX_REFRESH_NO_EXIT" not in (REPO / "automation" / "Refresh-HorseShowsPbix.ps1").read_text(encoding="utf-8"):
         fail("refresh script must honor PBIX_REFRESH_NO_EXIT")
     if "LogonType Interactive" not in register:
