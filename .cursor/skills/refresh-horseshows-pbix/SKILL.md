@@ -44,16 +44,18 @@ Useful switches:
 | Switch | Purpose |
 | --- | --- |
 | `-DryRun` | Resolve paths, print the plan, do not start Power BI Desktop |
-| `-KeepOpen` | Leave Power BI Desktop running after a refresh this script started |
+| `-KeepOpen` | (default) Leave Power BI Desktop running |
+| `-CloseWhenDone` | Close Power BI Desktop if this run launched it |
 | `-SkipSave` | Refresh the in-memory model only (do not Ctrl+S the pbix) |
 | `-TimeoutMinutes 60` | Allow a longer VertiPaq refresh |
 
 The script:
 
-1. Opens `PowerBI/HorseShows.pbix` in Power BI Desktop if that file is not already open.
-2. Finds the local Analysis Services port (`msmdsrv.port.txt` / `msmdsrv.exe`).
-3. Issues a full TMSL refresh against the in-memory model.
-4. Sends Ctrl+S so the pbix on disk is updated, then closes Power BI Desktop only if this run launched it.
+1. Verifies `HorseShows.pbix` is a real file (not a Git LFS pointer / tiny OneDrive stub)
+2. Opens it in Power BI Desktop with a fully quoted path (OneDrive spaces break `Start-Process -ArgumentList`)
+3. Finds the local Analysis Services port (`msmdsrv.port.txt` / `msmdsrv.exe`)
+4. Issues a full TMSL refresh against the in-memory model
+5. Sends Ctrl+S so the pbix on disk is updated; leaves Desktop open unless `-CloseWhenDone`
 
 Shared logs live under `RESULTS_AUTOMATION_HOME` (default `C:\Users\mw\ResultsAutomation`) when `Common.ps1` is present. Otherwise the script writes to `%TEMP%\HorseShowsPbixRefresh`.
 

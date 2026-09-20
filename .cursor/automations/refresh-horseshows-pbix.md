@@ -1,34 +1,31 @@
-# HorseShows.pbix local refresh automation
+# Simple HorseShows.pbix refresh every 8 hours
 
-Scheduled local Cursor agent that refreshes `PowerBI/HorseShows.pbix` every 8 hours
-on the Windows machine that holds SQL Server and Power BI Desktop.
+## What it does
 
-## Why OneDrive breaks `powershell -File`
+1. Opens `PowerBI\HorseShows.pbix` in Power BI Desktop (`cmd start`, handles OneDrive spaces)
+2. Sends **Home → Refresh** (Alt+H, R)
+3. Waits, then **Ctrl+S**
+4. Leaves Power BI open
 
-The clone lives under `C:\Users\mw\OneDrive - timberwilde.net\...` (spaces).
-Any of these fail with `Processing -File 'C:\Users\mw\OneDrive' failed...`:
+No Cursor agent. No TOM / Analysis Services scripting.
 
-```text
-powershell -File C:\Users\mw\OneDrive - timberwilde.net\repos\horse_shows\...
-powershell -File "C:\Users\mw\OneDrive - timberwilde.net\..."   # Task Scheduler strips quotes
-```
+## Install (paste into Windows PowerShell)
 
-## Install (paste into PowerShell — do not use -File)
+Paste the contents of `automation/PASTE_TO_INSTALL.ps1`.
 
-Open **Windows PowerShell** and paste the block in `automation/PASTE_TO_INSTALL.ps1`
-(or the same block from the agent chat). It stashes conflicting untracked files,
-updates `main`, writes the space-free launcher, and dry-runs.
+That writes `C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\Refresh.ps1`
+and registers `\ResultsAutomation\ResultsAutomation - Horse Shows PBIX Refresh`.
 
-Do **not** run `powershell -File` against any path under OneDrive.
-
-## Manual run
+## Run once
 
 ```text
-cmd /c C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\DryRun.cmd
-cmd /c C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\Run.cmd -SkipAgent
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\Refresh.ps1
 ```
 
-## Optional `/loop`
+Log: `C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\refresh.log`
 
-While Cursor stays open: `/loop every 8 hours` and paste
-`automation/HorseShowsPbixRefresh.prompt.txt`.
+## Requirements
+
+- Interactive Windows logon (SendKeys needs a desktop session)
+- Real `.pbix` on disk (~442 MB), not a Git LFS pointer
+- English Power BI Desktop ribbon keytips (Alt+H, R)
