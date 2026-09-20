@@ -39,13 +39,13 @@ if (-not $SkipRegister) {
 }
 
 if (-not $SkipDryRun) {
-    $dry = Join-Path $launchDir 'DryRun.cmd'
+    $dry = Join-Path $launchDir 'DryRun.ps1'
     if (-not (Test-Path -LiteralPath $dry)) {
-        throw "DryRun.cmd missing at $dry — registration did not install the launcher."
+        throw "DryRun.ps1 missing at $dry — registration did not install the launcher."
     }
     Write-Host "=== Dry-run via $dry ==="
-    cmd.exe /c "`"$dry`""
-    if ($LASTEXITCODE -ne 0) { throw "Dry-run failed with exit $LASTEXITCODE" }
+    $p = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File', $dry) -Wait -PassThru -NoNewWindow
+    if ($p.ExitCode -ne 0) { throw "Dry-run failed with exit $($p.ExitCode)" }
     Write-Host ''
     Write-Host 'Dry-run succeeded. Path quoting is OK.'
 }
@@ -58,4 +58,4 @@ if ($InvokeNow) {
 
 Write-Host ''
 Write-Host 'Done. Real refresh:'
-Write-Host ("  cmd /c `"{0}`"" -f (Join-Path $launchDir 'Run.cmd'))
+Write-Host ("  powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"{0}`"" -f (Join-Path $launchDir 'Run.ps1'))
