@@ -9,8 +9,8 @@
     No Cursor agent. No Analysis Services / TOM. The scheduled task only ever
     uses -File against the ResultsAutomation path (no spaces).
 
-    -InvokeNow runs Refresh.ps1 in the current interactive session (not via
-    Start-ScheduledTask), so SendKeys can reach Power BI Desktop.
+    -InvokeNow runs Refresh.ps1 in the current interactive session (not by
+    queuing the scheduled task), so SendKeys can reach Power BI Desktop.
 #>
 [CmdletBinding()]
 param(
