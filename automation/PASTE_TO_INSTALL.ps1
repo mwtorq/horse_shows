@@ -1,55 +1,30 @@
 # PASTE THIS ENTIRE BLOCK into Windows PowerShell.
 # Do not use: powershell -File C:\Users\mw\OneDrive - ...
+# This install does NOT run git checkout (local scrape archives often block it).
 
 $ErrorActionPreference = 'Stop'
-
-function Invoke-Git {
-    param([Parameter(Mandatory)][string[]]$Args)
-    # git writes progress to stderr; with ErrorActionPreference=Stop that becomes
-    # a NativeCommandError even when the command succeeds. Capture and check exit code.
-    $prior = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-        & git @Args 2>&1 | ForEach-Object {
-            if ($_ -is [System.Management.Automation.ErrorRecord]) {
-                Write-Host $_.ToString()
-            } else {
-                Write-Host $_
-            }
-        }
-        if ($LASTEXITCODE -ne 0) {
-            throw "git $($Args -join ' ') failed with exit $LASTEXITCODE"
-        }
-    }
-    finally {
-        $ErrorActionPreference = $prior
-    }
-}
 
 $repo = 'C:\Users\mw\OneDrive - timberwilde.net\repos\horse_shows'
 $launchDir = 'C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh'
 $taskPath = '\ResultsAutomation\'
 $taskName = 'ResultsAutomation - Horse Shows PBIX Refresh'
-
-if (-not (Test-Path -LiteralPath $repo)) {
-    throw "Repo not found: $repo"
-}
-
-Set-Location -LiteralPath $repo
-Invoke-Git fetch, origin
-
-# Untracked local copies of automation/.cursor files block checkout/pull.
-$ErrorActionPreference = 'Continue'
-git stash push -u -m "pbix-refresh-install-temp" 2>&1 | ForEach-Object { Write-Host $_ }
-$ErrorActionPreference = 'Stop'
-
-Invoke-Git checkout, main
-Invoke-Git pull, --ff-only, origin, main
-
 $automationDir = Join-Path $repo 'automation'
 $agent = Join-Path $automationDir 'Run-HorseShowsPbixRefreshAgent.ps1'
+
 if (-not (Test-Path -LiteralPath $agent)) {
-    throw "Agent script missing after pull: $agent"
+    throw @"
+Missing $agent
+
+The PBIX refresh scripts are not in this clone yet. In a separate window, update
+the repo without discarding scrape archives, e.g.:
+
+  Set-Location '$repo'
+  git fetch origin
+  git merge --ff-only origin/main
+
+If merge is blocked only by untracked debug_shr_* files, move them aside or
+commit them, then retry. After $agent exists, re-run this paste block.
+"@
 }
 
 New-Item -ItemType Directory -Force -Path $launchDir | Out-Null
@@ -74,6 +49,7 @@ Set-Content -LiteralPath (Join-Path $launchDir 'DryRun.cmd') -Value $dryCmd -Enc
 
 Write-Host "Wrote $launchDir\Run.cmd"
 Write-Host "Wrote $launchDir\DryRun.cmd"
+Write-Host "Using agent: $agent"
 
 $action = New-ScheduledTaskAction -Execute (Join-Path $launchDir 'Run.cmd') -WorkingDirectory $launchDir
 $trigger = New-ScheduledTaskTrigger -Once -At '06:00' -RepetitionInterval (New-TimeSpan -Hours 8)
@@ -91,5 +67,3 @@ Write-Host ''
 Write-Host 'SUCCESS. Path issue is fixed.'
 Write-Host 'Real refresh now:  cmd /c C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\Run.cmd -SkipAgent'
 Write-Host 'Or start task:     Start-ScheduledTask -TaskPath ''\ResultsAutomation\'' -TaskName ''ResultsAutomation - Horse Shows PBIX Refresh'''
-Write-Host ''
-Write-Host 'Optional: review stashed local files with  git stash list'
