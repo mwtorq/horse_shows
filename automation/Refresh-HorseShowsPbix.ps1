@@ -485,4 +485,10 @@ finally {
     }
 }
 
+# When launched via & from the space-free ResultsAutomation runner, do not
+# exit the parent process. Callers set PBIX_REFRESH_NO_EXIT=1.
+if ($env:PBIX_REFRESH_NO_EXIT -eq '1') {
+    return $exitCode
+}
 exit $exitCode
+
