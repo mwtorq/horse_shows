@@ -118,14 +118,14 @@ function Assert-PbixReadyToOpen {
     }
     # This report is ~442 MB. Tiny files mean OneDrive has not hydrated the real pbix yet.
     if ($item.Length -lt 50MB) {
-        throw ("HorseShows.pbix is only {0:N0} bytes — too small to be the real report. If it is on OneDrive, right-click the file → Always keep on this device, wait for the full download, then retry." -f $item.Length)
+        throw ("HorseShows.pbix is only {0:N0} bytes - too small to be the real report. If it is on OneDrive, right-click the file -> Always keep on this device, wait for the full download, then retry." -f $item.Length)
     }
     # Cloud-only / not fully recalled attributes (Windows / OneDrive).
     try {
         $attrs = [int]$item.Attributes
         # FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x00400000
         if (($attrs -band 0x00400000) -ne 0) {
-            throw "HorseShows.pbix is still an OneDrive cloud placeholder. Right-click → Always keep on this device, wait until Size on disk is hundreds of MB, then retry."
+            throw "HorseShows.pbix is still an OneDrive cloud placeholder. Right-click -> Always keep on this device, wait until Size on disk is hundreds of MB, then retry."
         }
     }
     catch [System.Management.Automation.RuntimeException] {
@@ -142,7 +142,7 @@ function Start-PowerBIDesktopWithPbix {
         [Parameter(Mandatory)][string]$PbixPath
     )
     # Open the .pbix as a document (shell association). Do NOT pass the path as
-    # Arguments to PBIDesktop.exe — Windows PowerShell splits on the space in
+    # Arguments to PBIDesktop.exe - Windows PowerShell splits on the space in
     # "OneDrive - timberwilde.net" and Desktop never loads the real file.
     Write-RefreshLog ("Opening pbix via shell: {0}" -f $PbixPath)
     $proc = Start-Process -FilePath $PbixPath -WorkingDirectory ([System.IO.Path]::GetDirectoryName($PbixPath)) -PassThru

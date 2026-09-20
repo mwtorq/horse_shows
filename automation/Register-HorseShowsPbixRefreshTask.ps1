@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Install a simple 8-hour HorseShows.pbix refresh (open → Refresh → Save).
+    Install a simple 8-hour HorseShows.pbix refresh (open -> Refresh -> Save).
 
 .DESCRIPTION
     Writes C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\Refresh.ps1 + Run.cmd
@@ -129,6 +129,15 @@ $runCmd = @(
     'exit /b %ERRORLEVEL%'
 ) -join "`r`n"
 Set-Content -LiteralPath $runCmdPath -Value $runCmd -Encoding ASCII
+
+# Compat for leftover agent launchers / scheduled actions.
+$compatPs1 = @(
+    '$ErrorActionPreference = ''Stop'''
+    '& (Join-Path $PSScriptRoot ''Refresh.ps1'')'
+    'exit $LASTEXITCODE'
+) -join "`r`n"
+Set-Content -LiteralPath (Join-Path $LaunchDir 'Run.ps1') -Value $compatPs1 -Encoding ASCII
+Set-Content -LiteralPath (Join-Path $LaunchDir 'DryRun.ps1') -Value $compatPs1 -Encoding ASCII
 
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$refreshPath`"" -WorkingDirectory $LaunchDir
 $trigger = New-ScheduledTaskTrigger -Once -At $At -RepetitionInterval (New-TimeSpan -Hours $RepeatHours)
