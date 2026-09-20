@@ -141,20 +141,35 @@ function Start-PowerBIDesktopWithPbix {
         [Parameter(Mandatory)][string]$DesktopExe,
         [Parameter(Mandatory)][string]$PbixPath
     )
-    # Do NOT use Start-Process -ArgumentList @(...) with an OneDrive path.
-    # Windows PowerShell 5.1 splits on the space in "OneDrive - timberwilde.net",
-    # so PBIDesktop only receives C:\Users\mw\OneDrive and never loads the pbix.
+    # Open the .pbix as a document (shell association). Do NOT pass the path as
+    # Arguments to PBIDesktop.exe — Windows PowerShell splits on the space in
+    # "OneDrive - timberwilde.net" and Desktop never loads the real file.
+    Write-RefreshLog ("Opening pbix via shell: {0}" -f $PbixPath)
+    $proc = Start-Process -FilePath $PbixPath -WorkingDirectory ([System.IO.Path]::GetDirectoryName($PbixPath)) -PassThru
+    if ($proc -and $proc.ProcessName -match 'PBIDesktop|PowerBI') {
+        return $proc
+    }
+
+    # Association may return a stub process; wait briefly and bind to PBIDesktop.
+    $deadline = (Get-Date).AddSeconds(60)
+    do {
+        Start-Sleep -Seconds 2
+        $existing = Get-OpenPowerBIDesktopForPbix -TargetPbix $PbixPath
+        if ($existing) { return $existing }
+        $any = Get-Process -Name 'PBIDesktop' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($any) { return $any }
+    } while ((Get-Date) -lt $deadline)
+
+    # Last resort: launch the exe with ProcessStartInfo + quoted args.
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $DesktopExe
     $psi.Arguments = '"' + $PbixPath + '"'
     $psi.WorkingDirectory = [System.IO.Path]::GetDirectoryName($PbixPath)
     $psi.UseShellExecute = $true
-    Write-RefreshLog ("Starting: {0} {1}" -f $DesktopExe, $psi.Arguments)
-    $proc = [System.Diagnostics.Process]::Start($psi)
-    if (-not $proc) {
-        throw "Failed to start Power BI Desktop for $PbixPath"
-    }
-    return $proc
+    Write-RefreshLog ("Fallback exe launch: {0} {1}" -f $DesktopExe, $psi.Arguments)
+    $proc2 = [System.Diagnostics.Process]::Start($psi)
+    if (-not $proc2) { throw "Failed to start Power BI Desktop for $PbixPath" }
+    return $proc2
 }
 
 function Get-PowerBIDesktopExe {
@@ -488,12 +503,15 @@ try {
         $script:LaunchedDesktop = $false
     }
     else {
-        Write-RefreshLog "Launching Power BI Desktop with fully-quoted pbix path"
+        Write-RefreshLog "Opening HorseShows.pbix in Power BI Desktop (shell association, no exe args)"
         $script:DesktopProcess = Start-PowerBIDesktopWithPbix -DesktopExe $desktopExe -PbixPath $resolvedPbix
         $script:LaunchedDesktop = $true
         # Large import models need time before msmdsrv publishes a port.
-        Write-RefreshLog 'Waiting 15s for Power BI Desktop to begin loading the pbix...'
-        Start-Sleep -Seconds 15
+        Write-RefreshLog 'Waiting 30s for Power BI Desktop to load the pbix...'
+        Start-Sleep -Seconds 30
+        # Re-resolve in case shell association returned a stub process.
+        $bound = Get-OpenPowerBIDesktopForPbix -TargetPbix $resolvedPbix
+        if ($bound) { $script:DesktopProcess = $bound }
     }
 
     $port = Wait-ForDesktopModelPort -Desktop $script:DesktopProcess -Deadline $deadline
