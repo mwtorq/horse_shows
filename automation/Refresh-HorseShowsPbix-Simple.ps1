@@ -1,34 +1,31 @@
 # ASCII-only. Windows PowerShell 5.1 safe.
-# Opens HorseShows.pbix, Home>Refresh (Alt+H,R), Ctrl+S. Leaves Desktop open.
-# Call in-process (& .\Refresh-HorseShowsPbix-Simple.ps1) or via Run-PbixRefresh.cmd
-# in this folder (relative -File after cd - never pass a full OneDrive -File path).
+# Open HorseShows.pbix, refresh model via TOM (Analysis Services), Ctrl+S save.
+# Falls back to UI Automation / SendKeys if TOM is unavailable.
+# Use Run-PbixRefresh.cmd (relative -File) or call in-process with &.
 
 [CmdletBinding()]
 param(
     [string]$PbixPath = '',
     [string]$LogPath = '',
-    [int]$LoadTimeoutSec = 300,
+    [int]$LoadTimeoutSec = 420,
     [int]$RefreshWaitSec = 300,
-    [switch]$QuickTest
+    [switch]$QuickTest,
+    [switch]$UiOnly
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 if ($QuickTest) {
-    $LoadTimeoutSec = 90
-    $RefreshWaitSec = 60
+    $LoadTimeoutSec = 120
+    $RefreshWaitSec = 90
 }
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $KnownPbix = 'C:\Users\mw\OneDrive - timberwilde.net\repos\horse_shows\PowerBI\HorseShows.pbix'
 if (-not $PbixPath) {
     $fromRepo = Join-Path (Join-Path $RepoRoot 'PowerBI') 'HorseShows.pbix'
-    if (Test-Path -LiteralPath $fromRepo) {
-        $PbixPath = $fromRepo
-    } else {
-        $PbixPath = $KnownPbix
-    }
+    if (Test-Path -LiteralPath $fromRepo) { $PbixPath = $fromRepo } else { $PbixPath = $KnownPbix }
 }
 if (-not $LogPath) {
     $launch = if ($env:RESULTS_AUTOMATION_HOME) {
@@ -71,6 +68,140 @@ function Get-PbiExe {
     throw 'PBIDesktop.exe not found. Install Power BI Desktop.'
 }
 
+function Get-TomSearchRoots {
+    $roots = New-Object System.Collections.Generic.List[string]
+    try {
+        $exe = Get-PbiExe
+        $roots.Add((Split-Path -Parent $exe)) | Out-Null
+    } catch { }
+    foreach ($r in @(
+        (Join-Path ${env:ProgramFiles} 'Microsoft Power BI Desktop\bin'),
+        (Join-Path ${env:ProgramFiles} 'Microsoft Power BI Desktop'),
+        (Join-Path ${env:LocalAppData} 'Microsoft\Power BI Desktop')
+    )) {
+        if ($r) { $roots.Add($r) | Out-Null }
+    }
+    Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'Packages') -Filter 'Microsoft.MicrosoftPowerBIDesktop_*' -Directory -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            $roots.Add((Join-Path $_.FullName 'LocalCache\Local\Microsoft\Power BI Desktop\bin')) | Out-Null
+            $roots.Add((Join-Path $_.FullName 'LocalCache\Local\Microsoft\Power BI Desktop')) | Out-Null
+        }
+    $tomHome = if ($env:RESULTS_AUTOMATION_HOME) {
+        Join-Path $env:RESULTS_AUTOMATION_HOME 'tom_nuget'
+    } else {
+        'C:\Users\mw\ResultsAutomation\tom_nuget'
+    }
+    $roots.Add((Join-Path $tomHome 'Microsoft.AnalysisServices.retail.amd64\lib\net45')) | Out-Null
+    $roots.Add((Join-Path $tomHome 'Microsoft.AnalysisServices.retail.amd64\lib\net472')) | Out-Null
+    $roots.Add((Join-Path $tomHome 'Microsoft.AnalysisServices.retail.amd64\lib\net8.0')) | Out-Null
+    $roots.Add((Join-Path $env:TEMP 'tom_nuget\Microsoft.AnalysisServices.retail.amd64\lib\net45')) | Out-Null
+    $roots.Add((Join-Path $env:TEMP 'tom_nuget\Microsoft.AnalysisServices.retail.amd64\lib\net8.0')) | Out-Null
+    return @($roots | Select-Object -Unique)
+}
+
+function Find-TomDirectory {
+    $need = 'Microsoft.AnalysisServices.Tabular.dll'
+    foreach ($root in Get-TomSearchRoots) {
+        if (-not $root -or -not (Test-Path -LiteralPath $root)) { continue }
+        $direct = Join-Path $root $need
+        if (Test-Path -LiteralPath $direct) { return $root }
+        $hit = Get-ChildItem -Path $root -Filter $need -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($hit) { return $hit.DirectoryName }
+    }
+    return $null
+}
+
+function Get-TomNugetLibDir {
+    $tomHome = if ($env:RESULTS_AUTOMATION_HOME) {
+        Join-Path $env:RESULTS_AUTOMATION_HOME 'tom_nuget'
+    } else {
+        'C:\Users\mw\ResultsAutomation\tom_nuget'
+    }
+    foreach ($rel in @(
+        'Microsoft.AnalysisServices.retail.amd64\lib\net472',
+        'Microsoft.AnalysisServices.retail.amd64\lib\net45',
+        'Microsoft.AnalysisServices.retail.amd64\lib\net8.0',
+        'Microsoft.AnalysisServices.retail.amd64\lib\netstandard2.0'
+    )) {
+        $cand = Join-Path $tomHome $rel
+        if (Test-Path -LiteralPath (Join-Path $cand 'Microsoft.AnalysisServices.Tabular.dll')) {
+            return $cand
+        }
+    }
+    # Any Tabular.dll under tom_nuget
+    $hit = Get-ChildItem -Path $tomHome -Filter 'Microsoft.AnalysisServices.Tabular.dll' -Recurse -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($hit) { return $hit.DirectoryName }
+    return $null
+}
+
+function Install-TomFromNuget {
+    $tomHome = if ($env:RESULTS_AUTOMATION_HOME) {
+        Join-Path $env:RESULTS_AUTOMATION_HOME 'tom_nuget'
+    } else {
+        'C:\Users\mw\ResultsAutomation\tom_nuget'
+    }
+    New-Item -ItemType Directory -Force -Path $tomHome | Out-Null
+    $existing = Get-TomNugetLibDir
+    if ($existing) {
+        Write-Log ("TOM NuGet already present: {0}" -f $existing)
+        return $existing
+    }
+    $pkgDir = Join-Path $tomHome 'Microsoft.AnalysisServices.retail.amd64'
+    $zip = Join-Path $tomHome 'Microsoft.AnalysisServices.retail.amd64.nupkg.zip'
+    $url = 'https://www.nuget.org/api/v2/package/Microsoft.AnalysisServices.retail.amd64'
+    Write-Log ("DOWNLOADING TOM NuGet from {0}" -f $url)
+    Write-Host ">>> DOWNLOADING TOM NuGet package (one-time)..."
+    Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+    $len = (Get-Item -LiteralPath $zip).Length
+    Write-Log ("Downloaded nupkg size={0:N0} bytes -> {1}" -f $len, $zip)
+    Write-Host (">>> Downloaded {0:N0} bytes" -f $len)
+    if (Test-Path -LiteralPath $pkgDir) { Remove-Item -LiteralPath $pkgDir -Recurse -Force }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $pkgDir)
+    Write-Log ("Extracted TOM NuGet to {0}" -f $pkgDir)
+    Write-Host ">>> Extracted TOM NuGet"
+    $lib = Get-TomNugetLibDir
+    if (-not $lib) { throw "NuGet extract did not contain Microsoft.AnalysisServices.Tabular.dll under $tomHome" }
+    return $lib
+}
+
+function Import-TomAssemblies {
+    Write-Log 'Ensuring TOM assemblies (NuGet preferred)...'
+    # Always ensure NuGet package exists first so we never depend on PBI bin shipping TOM.
+    $dir = Install-TomFromNuget
+    if (-not $dir) { $dir = Find-TomDirectory }
+    if (-not $dir) {
+        throw 'Microsoft.AnalysisServices.Tabular.dll not found after NuGet install.'
+    }
+    Write-Log ("Using TOM directory: {0}" -f $dir)
+    $names = @(
+        'Microsoft.AnalysisServices.Core.dll',
+        'Microsoft.AnalysisServices.dll',
+        'Microsoft.AnalysisServices.Tabular.dll'
+    )
+    foreach ($n in $names) {
+        $dll = Join-Path $dir $n
+        if (-not (Test-Path -LiteralPath $dll)) {
+            Write-Log ("DLL not in folder (will try others): {0}" -f $dll) 'WARN'
+            continue
+        }
+        Write-Log ("Loading {0}" -f $dll)
+        try { Add-Type -Path $dll } catch {
+            if ($_.Exception.Message -notmatch 'already exists|duplicate') { throw }
+        }
+    }
+    $tabular = Join-Path $dir 'Microsoft.AnalysisServices.Tabular.dll'
+    if (-not (Test-Path -LiteralPath $tabular)) {
+        throw "Missing required DLL: $tabular"
+    }
+    try { Add-Type -Path $tabular } catch {
+        if ($_.Exception.Message -notmatch 'already exists|duplicate') { throw }
+    }
+    Write-Log ("Loaded TOM from {0}" -f $dir)
+}
+
 function Get-OpenPbixProcess([string]$Path) {
     $needle = $Path.Replace('/', '\').ToLowerInvariant()
     foreach ($p in Get-CimInstance Win32_Process -Filter "Name = 'PBIDesktop.exe'" -ErrorAction SilentlyContinue) {
@@ -87,11 +218,9 @@ function Wait-MainWindow([System.Diagnostics.Process]$Process, [int]$TimeoutSec)
     while ((Get-Date) -lt $deadline) {
         $Process.Refresh()
         if ($Process.HasExited) {
-            throw ("PBIDesktop exited while loading (pid {0}, code {1}). Open the pbix manually once." -f $Process.Id, $Process.ExitCode)
+            throw ("PBIDesktop exited while loading (pid {0}, code {1})." -f $Process.Id, $Process.ExitCode)
         }
-        if ($Process.MainWindowHandle -ne [IntPtr]::Zero) {
-            return
-        }
+        if ($Process.MainWindowHandle -ne [IntPtr]::Zero) { return }
         Start-Sleep -Seconds 2
     }
     throw ("Timed out after {0}s waiting for Power BI main window (pid {1})." -f $TimeoutSec, $Process.Id)
@@ -117,21 +246,175 @@ function Focus-ProcessWindow([System.Diagnostics.Process]$Process) {
     Start-Sleep -Seconds 1
 }
 
+function Read-MsmdsrvPortFile([string]$Path) {
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    $text = if ($bytes.Length -ge 2 -and $bytes[1] -eq 0) {
+        [System.Text.Encoding]::Unicode.GetString($bytes)
+    } else {
+        [System.IO.File]::ReadAllText($Path)
+    }
+    $text = $text.Trim().Trim([char]0)
+    $port = 0
+    if (-not [int]::TryParse($text, [ref]$port)) {
+        throw "Could not parse AS port from $Path ('$text')"
+    }
+    return $port
+}
+
+function Wait-ModelPort([System.Diagnostics.Process]$Desktop, [int]$TimeoutSec) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        $Desktop.Refresh()
+        if ($Desktop.HasExited) { throw "PBIDesktop exited before model port (pid $($Desktop.Id))" }
+        foreach ($p in Get-CimInstance Win32_Process -Filter "Name = 'msmdsrv.exe'" -ErrorAction SilentlyContinue) {
+            if ([int]$p.ParentProcessId -ne $Desktop.Id) { continue }
+            $cmd = [string]$p.CommandLine
+            if ($cmd -match '-s\s+"([^"]+)"' -or $cmd -match '-s\s+(\S+)') {
+                $portFile = Join-Path $Matches[1].TrimEnd('\') 'msmdsrv.port.txt'
+                if (Test-Path -LiteralPath $portFile) {
+                    $port = Read-MsmdsrvPortFile $portFile
+                    Write-Log ("Model port {0} from {1}" -f $port, $portFile)
+                    return $port
+                }
+            }
+        }
+        Start-Sleep -Seconds 3
+    }
+    throw "Timed out waiting for msmdsrv port after $($TimeoutSec)s"
+}
+
+function Invoke-TomFullRefresh([int]$Port) {
+    Import-TomAssemblies
+    $server = New-Object Microsoft.AnalysisServices.Tabular.Server
+    try {
+        $cs = 'Data Source=localhost:{0};Application Name=HorseShowsPbixSimple;Connect Timeout=120' -f $Port
+        Write-Log ("TOM connect {0}" -f $cs)
+        $server.Connect($cs)
+        # Full model refresh against SQL can take a long time; default timeouts are too low.
+        try { $server.Timeout = 7200 } catch { Write-Log ("Could not set server.Timeout: {0}" -f $_.Exception.Message) 'WARN' }
+        if ($server.Databases.Count -lt 1) { throw "No tabular DB on localhost:$Port" }
+        $db = $server.Databases[0]
+        Write-Log ("TOM refresh database '{0}' (LastProcessed={1})" -f $db.Name, $db.LastProcessed)
+        $tmsl = '{{ "refresh": {{ "type": "full", "objects": [ {{ "database": "{0}" }} ] }} }}' -f $db.Name
+        Write-Log 'Starting full TMSL refresh NOW. This often takes 10-40+ minutes. Leave Power BI open; more log lines appear when it finishes.'
+        Write-Host '>>> TMSL refresh running (can take a long time). Do not close Power BI.'
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $results = $server.Execute($tmsl)
+        $sw.Stop()
+        Write-Log ("TMSL Execute returned after {0:mm\:ss}" -f $sw.Elapsed)
+        $errors = @()
+        foreach ($result in @($results)) {
+            foreach ($msg in @($result.Messages)) {
+                $text = [string]$msg
+                if ($msg.GetType().Name -match 'Error' -or $text -match '(?i)error|failed') {
+                    $errors += $text
+                } else {
+                    Write-Log $text
+                }
+            }
+        }
+        if ($errors.Count -gt 0) { throw ("TMSL errors: {0}" -f ($errors -join ' | ')) }
+        $db.Refresh()
+        Write-Log ("TOM refresh done. LastProcessed={0}" -f $db.LastProcessed)
+    }
+    finally {
+        if ($server.Connected) { $server.Disconnect() }
+    }
+}
+
+function Get-UiaWindow([int]$ProcessId) {
+    Add-Type -AssemblyName UIAutomationClient
+    Add-Type -AssemblyName UIAutomationTypes
+    $root = [System.Windows.Automation.AutomationElement]::RootElement
+    $cond = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ProcessIdProperty, $ProcessId)
+    return $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $cond)
+}
+
+function Invoke-UiaByName([System.Windows.Automation.AutomationElement]$Window, [string]$Name) {
+    if (-not $Window) { return $false }
+    $nameCond = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::NameProperty, $Name)
+    $el = $Window.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $nameCond)
+    if (-not $el) { return $false }
+    try {
+        $pat = $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+        $pat.Invoke()
+        Write-Log ("UIA Invoke '{0}'" -f $Name)
+        return $true
+    } catch {
+        Write-Log ("UIA Invoke '{0}' failed: {1}" -f $Name, $_.Exception.Message) 'WARN'
+        return $false
+    }
+}
+
+function Invoke-UiRefresh([System.Diagnostics.Process]$Process) {
+    Add-Type -AssemblyName System.Windows.Forms
+    Focus-ProcessWindow -Process $Process
+    $win = $null
+    try { $win = Get-UiaWindow -ProcessId $Process.Id } catch {
+        Write-Log ("UIA window lookup failed: {0}" -f $_.Exception.Message) 'WARN'
+    }
+    if (Invoke-UiaByName -Window $win -Name 'Refresh') { return $true }
+
+    Write-Log 'UIA Refresh not found; trying SendKeys Alt+H,R / F10 H R' 'WARN'
+    foreach ($seq in @(
+        { [System.Windows.Forms.SendKeys]::SendWait('%hr') },
+        {
+            [System.Windows.Forms.SendKeys]::SendWait('%')
+            Start-Sleep -Milliseconds 800
+            [System.Windows.Forms.SendKeys]::SendWait('h')
+            Start-Sleep -Milliseconds 800
+            [System.Windows.Forms.SendKeys]::SendWait('r')
+        },
+        {
+            [System.Windows.Forms.SendKeys]::SendWait('{F10}')
+            Start-Sleep -Milliseconds 800
+            [System.Windows.Forms.SendKeys]::SendWait('h')
+            Start-Sleep -Milliseconds 800
+            [System.Windows.Forms.SendKeys]::SendWait('r')
+        }
+    )) {
+        Focus-ProcessWindow -Process $Process
+        & $seq
+        Start-Sleep -Seconds 3
+    }
+    return $false
+}
+
+function Save-Pbix([System.Diagnostics.Process]$Process, [string]$Path, [datetime]$BeforeUtc, [int]$TimeoutSec) {
+    Add-Type -AssemblyName System.Windows.Forms
+    Focus-ProcessWindow -Process $Process
+    $win = $null
+    try { $win = Get-UiaWindow -ProcessId $Process.Id } catch { }
+    if (-not (Invoke-UiaByName -Window $win -Name 'Save')) {
+        Write-Log 'SendKeys Ctrl+S'
+        [System.Windows.Forms.SendKeys]::SendWait('^s')
+    }
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds 3
+        $after = (Get-Item -LiteralPath $Path -Force).LastWriteTimeUtc
+        if ($after -gt $BeforeUtc) {
+            Write-Log ("Saved. LastWrite={0:o}" -f $after)
+            return $true
+        }
+    }
+    return $false
+}
+
+# ---- main ----
 Write-Log '==== simple refresh start ===='
 Write-Log ("PSVersion={0} User={1}\{2}" -f $PSVersionTable.PSVersion, $env:USERDOMAIN, $env:USERNAME)
 Write-Log ("Pbix={0}" -f $PbixPath)
-Write-Log ("Log={0}" -f $LogPath)
 
-if ($env:OS -ne 'Windows_NT') { throw 'This script must run on Windows with Power BI Desktop.' }
+if ($env:OS -ne 'Windows_NT') { throw 'Must run on Windows with Power BI Desktop.' }
 if (-not (Test-Path -LiteralPath $PbixPath)) { throw "Missing pbix: $PbixPath" }
 
 $item = Get-Item -LiteralPath $PbixPath -Force
-Write-Log ("Pbix size={0:N0} bytes LastWrite={1:o}" -f $item.Length, $item.LastWriteTimeUtc)
+Write-Log ("Pbix size={0:N0} LastWrite={1:o}" -f $item.Length, $item.LastWriteTimeUtc)
 if ($item.Length -lt 1MB) {
-    throw ("HorseShows.pbix is only {0:N0} bytes (LFS pointer or empty). Run: git lfs pull --include=`"PowerBI/HorseShows.pbix`" then OneDrive -> Always keep on this device." -f $item.Length)
-}
-if ($item.Length -lt 50MB) {
-    Write-Log ("Pbix is only {0:N0} bytes - expected ~442MB. Continuing, but refresh may be wrong file." -f $item.Length) 'WARN'
+    throw ("HorseShows.pbix is only {0:N0} bytes (LFS/OneDrive stub). git lfs pull --include=`"PowerBI/HorseShows.pbix`" then Always keep on this device." -f $item.Length)
 }
 
 $beforeWrite = $item.LastWriteTimeUtc
@@ -139,76 +422,73 @@ $proc = Get-OpenPbixProcess $PbixPath
 
 if (-not $proc) {
     $exe = Get-PbiExe
-    Write-Log ("PBI exe: {0}" -f $exe)
-    Write-Log 'Opening pbix via cmd start (quoted paths)...'
-    # start "" "exe" "pbix" - reliable with spaces in OneDrive path
+    Write-Log ("Opening via cmd start: {0}" -f $exe)
     $arg = '/c start "" "' + $exe + '" "' + $PbixPath + '"'
     Start-Process -FilePath 'cmd.exe' -ArgumentList $arg -WindowStyle Hidden | Out-Null
-
-    $deadline = (Get-Date).AddSeconds([Math]::Min(60, $LoadTimeoutSec))
+    $deadline = (Get-Date).AddSeconds([Math]::Min(90, $LoadTimeoutSec))
     while ((Get-Date) -lt $deadline -and -not $proc) {
         Start-Sleep -Seconds 2
         $proc = Get-OpenPbixProcess $PbixPath
         if (-not $proc) {
             $proc = Get-Process -Name PBIDesktop -ErrorAction SilentlyContinue |
-                Sort-Object StartTime -Descending |
-                Select-Object -First 1
+                Sort-Object StartTime -Descending | Select-Object -First 1
         }
     }
     if (-not $proc) {
-        Write-Log 'cmd start did not yield PBIDesktop; trying Invoke-Item (shell association)...' 'WARN'
+        Write-Log 'Fallback Invoke-Item' 'WARN'
         Invoke-Item -LiteralPath $PbixPath
         Start-Sleep -Seconds 10
         $proc = Get-OpenPbixProcess $PbixPath
         if (-not $proc) {
             $proc = Get-Process -Name PBIDesktop -ErrorAction SilentlyContinue |
-                Sort-Object StartTime -Descending |
-                Select-Object -First 1
+                Sort-Object StartTime -Descending | Select-Object -First 1
         }
     }
-    if (-not $proc) { throw 'Power BI Desktop did not start. Open HorseShows.pbix manually once, then re-run.' }
-    Write-Log ("Started pid {0}; waiting for main window (up to {1}s)..." -f $proc.Id, $LoadTimeoutSec)
+    if (-not $proc) { throw 'Power BI Desktop did not start.' }
+    Write-Log ("Started pid {0}; waiting for window..." -f $proc.Id)
     Wait-MainWindow -Process $proc -TimeoutSec $LoadTimeoutSec
-    # Extra settle time after window appears (model still loading).
-    $settle = [Math]::Min(60, [Math]::Max(15, [int]($LoadTimeoutSec / 5)))
-    Write-Log ("Window up; settling {0}s more for model load..." -f $settle)
-    Start-Sleep -Seconds $settle
 }
 else {
     Write-Log ("Already open pid {0}" -f $proc.Id)
-    Wait-MainWindow -Process $proc -TimeoutSec ([Math]::Min(60, $LoadTimeoutSec))
+    Wait-MainWindow -Process $proc -TimeoutSec ([Math]::Min(90, $LoadTimeoutSec))
 }
 
 $proc.Refresh()
 if ($proc.HasExited) { throw 'Power BI Desktop exited before refresh.' }
 
-Add-Type -AssemblyName System.Windows.Forms
-Focus-ProcessWindow -Process $proc
-
-Write-Log 'SendKeys: Alt, H, R (Home > Refresh)'
-[System.Windows.Forms.SendKeys]::SendWait('%')
-Start-Sleep -Milliseconds 600
-[System.Windows.Forms.SendKeys]::SendWait('h')
-Start-Sleep -Milliseconds 600
-[System.Windows.Forms.SendKeys]::SendWait('r')
-
-Write-Log ("Waiting {0}s for refresh to finish..." -f $RefreshWaitSec)
-Start-Sleep -Seconds $RefreshWaitSec
-
-$proc.Refresh()
-if ($proc.HasExited) {
-    throw 'Power BI Desktop exited during refresh wait. Keys may have hit the wrong window.'
+$refreshed = $false
+if (-not $UiOnly) {
+    try {
+        Write-Log 'Waiting for Analysis Services model port...'
+        $port = Wait-ModelPort -Desktop $proc -TimeoutSec $LoadTimeoutSec
+        Invoke-TomFullRefresh -Port $port
+        $refreshed = $true
+    } catch {
+        Write-Log ("TOM refresh failed: {0}" -f $_.Exception.Message) 'WARN'
+        Write-Log 'Falling back to UI Refresh click / SendKeys' 'WARN'
+    }
 }
 
-Focus-ProcessWindow -Process $proc
-Write-Log 'SendKeys: Ctrl+S (Save)'
-[System.Windows.Forms.SendKeys]::SendWait('^s')
-Start-Sleep -Seconds 30
+if (-not $refreshed) {
+    [void](Invoke-UiRefresh -Process $proc)
+    Write-Log ("Waiting {0}s after UI refresh keys/click..." -f $RefreshWaitSec)
+    Start-Sleep -Seconds $RefreshWaitSec
+}
 
+$proc.Refresh()
+if ($proc.HasExited) { throw 'Power BI Desktop exited during/after refresh.' }
+
+$saved = Save-Pbix -Process $proc -Path $PbixPath -BeforeUtc $beforeWrite -TimeoutSec 180
 $after = Get-Item -LiteralPath $PbixPath -Force
-Write-Log ("Pbix LastWrite before={0:o} after={1:o} size={2:N0}" -f $beforeWrite, $after.LastWriteTimeUtc, $after.Length)
-if ($after.LastWriteTimeUtc -le $beforeWrite) {
-    Write-Log 'WARNING: pbix LastWriteTime did not advance. Refresh/Save may not have worked. Leave Desktop open and check for dialogs.' 'WARN'
+Write-Log ("Pbix LastWrite before={0:o} after={1:o} size={2:N0} tom={3} saved={4}" -f $beforeWrite, $after.LastWriteTimeUtc, $after.Length, $refreshed, $saved)
+
+if (-not $refreshed -and -not $saved) {
+    Write-Log 'Refresh and save both unverified. Check Desktop for dialogs.' 'ERROR'
+    Write-Log '==== simple refresh FAILED ====' 'ERROR'
+    exit 1
+}
+if ($refreshed -and -not $saved) {
+    Write-Log 'TOM refresh OK but file timestamp unchanged - save manually (Ctrl+S) once.' 'WARN'
     Write-Log '==== simple refresh finished with WARN ====' 'WARN'
     exit 2
 }

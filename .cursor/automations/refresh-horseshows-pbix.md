@@ -3,9 +3,9 @@
 ## What it does
 
 1. Opens `PowerBI\HorseShows.pbix` in Power BI Desktop (`cmd start`, OneDrive-safe)
-2. Waits for the real main window (`SetForegroundWindow`)
-3. Sends **Home -> Refresh** (Alt+H, R), waits, **Ctrl+S**
-4. Leaves Power BI open; warns if the `.pbix` timestamp did not change
+2. Waits for the Analysis Services model port and runs a **full TOM refresh**
+3. Saves with Ctrl+S / UIA Save (falls back to ribbon SendKeys if TOM unavailable)
+4. Leaves Power BI open; checks `.pbix` LastWriteTime
 
 No Cursor agent. No TOM.
 

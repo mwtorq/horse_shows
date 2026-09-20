@@ -78,6 +78,9 @@ def main() -> None:
 
     for needle in (
         "SetForegroundWindow",
+        "Invoke-TomFullRefresh",
+        "Install-TomFromNuget",
+        "msmdsrv",
         "SendWait",
         "cmd.exe",
         "LastWriteTimeUtc",
