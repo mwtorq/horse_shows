@@ -69,10 +69,12 @@ def main() -> None:
     )
     if not re.search(r"\$RepeatHours\s*=\s*8\b", register):
         fail("scheduled task default is not every 8 hours")
-    if "Run-HorseShowsPbixRefreshAgent.ps1" not in register:
-        fail("scheduled task does not launch the Cursor agent runner")
-    if "HorseShowsPbixRefresh" not in register or "Run.cmd" not in register:
-        fail("scheduled task must install/use space-free ResultsAutomation\\HorseShowsPbixRefresh\\Run.cmd")
+    if "Refresh-HorseShowsPbix.ps1" not in register:
+        fail("scheduled task does not reference Refresh-HorseShowsPbix.ps1")
+    if "HorseShowsPbixRefresh" not in register or "Run.ps1" not in register:
+        fail("scheduled task must install/use space-free ResultsAutomation\\HorseShowsPbixRefresh\\Run.ps1")
+    if "PBIX_REFRESH_NO_EXIT" not in (REPO / "automation" / "Refresh-HorseShowsPbix.ps1").read_text(encoding="utf-8"):
+        fail("refresh script must honor PBIX_REFRESH_NO_EXIT")
     if "LogonType Interactive" not in register:
         fail("scheduled task must use an interactive logon for Power BI Desktop")
     if "IgnoreNew" not in register:
@@ -85,8 +87,8 @@ def main() -> None:
         fail("agent runner is missing headless Cursor CLI flags")
     if "Refresh-HorseShowsPbix.ps1" not in runner:
         fail("agent runner has no script fallback")
-    if r".\Refresh-HorseShowsPbix.ps1" not in runner and ".\\Refresh-HorseShowsPbix.ps1" not in runner:
-        fail("agent runner must invoke refresh via relative -File to avoid OneDrive spaces")
+    if "PBIX_REFRESH_NO_EXIT" not in runner:
+        fail("agent runner must call refresh in-process with PBIX_REFRESH_NO_EXIT")
 
     refresh = (REPO / "automation" / "Refresh-HorseShowsPbix.ps1").read_text(encoding="utf-8")
     for needle in (

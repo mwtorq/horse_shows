@@ -97,21 +97,27 @@ function Invoke-DirectRefresh {
     param([string]$Reason)
     if ($Reason) { Write-AgentLog $Reason 'WARN' }
 
-    # Relative -File only. WorkingDirectory may contain spaces (OneDrive); -File must not.
-    # Windows PowerShell 5.1 Start-Process ArgumentList arrays also mangle spaced paths.
-    $automationDir = $PSScriptRoot
-    $argLine = '-NoProfile -ExecutionPolicy Bypass -File .\Refresh-HorseShowsPbix.ps1 -TimeoutMinutes {0}' -f $TimeoutMinutes
-    if ($DryRun) { $argLine += ' -DryRun' }
-
-    $shell = 'powershell.exe'
-    if (-not (Get-Command $shell -ErrorAction SilentlyContinue)) {
-        $pwsh = Get-Command pwsh -ErrorAction SilentlyContinue
-        if ($pwsh) { $shell = $pwsh.Source } else { throw 'powershell.exe was not found' }
+    # Never Start-Process powershell -File against an OneDrive path (spaces break
+    # -File). Call the refresh script in-process with PBIX_REFRESH_NO_EXIT=1.
+    $refreshScript = Join-Path $PSScriptRoot 'Refresh-HorseShowsPbix.ps1'
+    Write-AgentLog ("Running refresh in-process: {0}" -f $refreshScript)
+    $prior = $env:PBIX_REFRESH_NO_EXIT
+    $env:PBIX_REFRESH_NO_EXIT = '1'
+    try {
+        $refreshParams = @{ TimeoutMinutes = $TimeoutMinutes }
+        if ($DryRun) { $refreshParams['DryRun'] = $true }
+        $code = & $refreshScript @refreshParams
+        if ($null -eq $code) { $code = 0 }
+        return [int]$code
     }
-
-    Write-AgentLog ("Running: {0} (cwd {1}) {2}" -f $shell, $automationDir, $argLine)
-    $proc = Start-Process -FilePath $shell -ArgumentList $argLine -WorkingDirectory $automationDir -Wait -PassThru -NoNewWindow
-    return $proc.ExitCode
+    catch {
+        Write-AgentLog $_.Exception.Message 'ERROR'
+        return 1
+    }
+    finally {
+        if ($null -eq $prior) { Remove-Item Env:PBIX_REFRESH_NO_EXIT -ErrorAction SilentlyContinue }
+        else { $env:PBIX_REFRESH_NO_EXIT = $prior }
+    }
 }
 
 function Start-CursorAgentProcess {
