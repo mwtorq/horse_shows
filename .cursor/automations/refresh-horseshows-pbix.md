@@ -1,51 +1,46 @@
 # HorseShows.pbix local refresh automation
 
-Scheduled local Cursor agent that refreshes `PowerBI/HorseShows.pbix` every 8 hours on the Windows machine that holds SQL Server and Power BI Desktop.
+Scheduled local Cursor agent that refreshes `PowerBI/HorseShows.pbix` every 8 hours
+on the Windows machine that holds SQL Server and Power BI Desktop.
 
-This cannot run as a Cursor cloud automation unless that automation is pinned to a self-hosted worker on this PC with computer use. The durable path is Windows Task Scheduler launching Cursor CLI (`agent -p`) on the local clone.
+## Why OneDrive breaks `powershell -File`
 
-## Prompt
+The clone lives under `C:\Users\mw\OneDrive - timberwilde.net\...` (spaces).
+Any of these fail with `Processing -File 'C:\Users\mw\OneDrive' failed...`:
 
-Use the text in `automation/HorseShowsPbixRefresh.prompt.txt` unchanged.
+```text
+powershell -File C:\Users\mw\OneDrive - timberwilde.net\repos\horse_shows\...
+powershell -File "C:\Users\mw\OneDrive - timberwilde.net\..."   # Task Scheduler strips quotes
+```
 
-## Enable on the Windows machine
+## Install (paste into PowerShell — do not use -File)
 
-The fix lives on branch `cursor/horseshows-pbix-refresh-automation` until the PR
-is merged. A plain `git pull` on `main` will not pick it up.
+1. Open **Windows PowerShell**.
+2. Open `automation/PASTE_TO_INSTALL.ps1` on GitHub / in the repo, copy the whole file.
+3. Paste into PowerShell and press Enter.
+
+Or paste this short form after the branch exists locally:
 
 ```powershell
 Set-Location 'C:\Users\mw\OneDrive - timberwilde.net\repos\horse_shows'
 git fetch origin
 git checkout cursor/horseshows-pbix-refresh-automation
 git pull
-& .\automation\Enable-HorseShowsPbixRefresh.ps1
+Get-Content -LiteralPath .\automation\PASTE_TO_INSTALL.ps1 -Raw | Invoke-Expression
 ```
 
-That re-registers the task with a space-safe `-Command` action and runs a dry-run.
-Do **not** use `powershell -File C:\Users\mw\OneDrive - ...` (unquoted OneDrive path).
+That writes `C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\Run.cmd` (no spaces)
+and points the scheduled task at it. `Run.cmd` cds into the OneDrive automation
+folder with quotes, then runs `-File .\Run-HorseShowsPbixRefreshAgent.ps1`.
 
-For a real refresh after the dry-run looks good:
+## Manual run
 
-```powershell
-& .\automation\Run-HorseShowsPbixRefreshAgent.ps1 -SkipAgent
+```text
+cmd /c C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\DryRun.cmd
+cmd /c C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\Run.cmd -SkipAgent
 ```
 
-Or from cmd.exe: `automation\Run-HorseShowsPbixRefreshAgent.cmd -SkipAgent`
+## Optional `/loop`
 
-4. Optional in-session loop while Cursor stays open:
-
-   ```
-   /loop every 8 hours
-   ```
-
-   then paste the prompt file. `/loop` stops if Cursor quits; the scheduled task does not.
-
-## Optional Cursor Automation (self-hosted worker)
-
-If this PC is running `agent worker start --computer-use`, create an automation at cursor.com/automations:
-
-- Trigger: cron `0 */8 * * *` (every 8 hours)
-- Repository: `mwtorq/horse_shows`
-- Runtime: this machine's self-hosted worker
-- Prompt: contents of `automation/HorseShowsPbixRefresh.prompt.txt`
-- Pull requests: off
+While Cursor stays open: `/loop every 8 hours` and paste
+`automation/HorseShowsPbixRefresh.prompt.txt`.

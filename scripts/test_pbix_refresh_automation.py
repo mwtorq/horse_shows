@@ -23,6 +23,7 @@ REQUIRED = [
     REPO / "automation" / "Register-HorseShowsPbixRefreshTask.cmd",
     REPO / "automation" / "Run-HorseShowsPbixRefreshAgent.cmd",
     REPO / "automation" / "Enable-HorseShowsPbixRefresh.ps1",
+    REPO / "automation" / "PASTE_TO_INSTALL.ps1",
     REPO / "automation" / "HorseShowsPbixRefresh.prompt.txt",
     REPO / ".cursor" / "skills" / "refresh-horseshows-pbix" / "SKILL.md",
     REPO / ".cursor" / "automations" / "refresh-horseshows-pbix.md",
@@ -70,8 +71,8 @@ def main() -> None:
         fail("scheduled task default is not every 8 hours")
     if "Run-HorseShowsPbixRefreshAgent.ps1" not in register:
         fail("scheduled task does not launch the Cursor agent runner")
-    if r".\Run-HorseShowsPbixRefreshAgent.ps1" not in register and ".\\Run-HorseShowsPbixRefreshAgent.ps1" not in register:
-        fail("scheduled task must use relative -File with WorkingDirectory (OneDrive spaces)")
+    if "HorseShowsPbixRefresh" not in register or "Run.cmd" not in register:
+        fail("scheduled task must install/use space-free ResultsAutomation\\HorseShowsPbixRefresh\\Run.cmd")
     if "LogonType Interactive" not in register:
         fail("scheduled task must use an interactive logon for Power BI Desktop")
     if "IgnoreNew" not in register:
