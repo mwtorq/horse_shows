@@ -3,31 +3,22 @@
     Register the 8-hour local Cursor agent task that refreshes HorseShows.pbix.
 
 .DESCRIPTION
-    Creates \ResultsAutomation\ResultsAutomation - Horse Shows PBIX Refresh. The
-    action is Run-HorseShowsPbixRefreshAgent.ps1, which launches Cursor CLI against
-    this repo and falls back to Refresh-HorseShowsPbix.ps1.
+    Creates \ResultsAutomation\ResultsAutomation - Horse Shows PBIX Refresh.
 
-    Settings:
+    The task does NOT execute anything under OneDrive. It runs
+    C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\Run.cmd (no spaces in
+    that path). That .cmd cds into the repo automation folder with a quoted
+    path, then uses a relative -File .\Run-HorseShowsPbixRefreshAgent.ps1.
 
-      RepeatHours         8, indefinitely.
-      MultipleInstances   IgnoreNew, so a refresh still running 8 hours later is
-                          not stacked.
-      ExecutionTimeLimit  2 hours. A 442 MB import model should finish well inside
-                          that; a hung Power BI Desktop is terminated.
-      LogonType           Interactive. Power BI Desktop needs a logged-on session.
-      StartWhenAvailable  a missed firing (machine off / still logged out) runs
-                          at the next logon.
+    This avoids the powershell.exe error:
+      Processing -File 'C:\Users\mw\OneDrive' failed because the file does not
+      have a '.ps1' extension
+    which happens whenever -File is given the full OneDrive path (spaces).
 
 .EXAMPLE
-    # From PowerShell already in the repo (best — no -File full path):
+    # Preferred: paste automation\PASTE_TO_INSTALL.ps1 into PowerShell, or:
     Set-Location 'C:\Users\mw\OneDrive - timberwilde.net\repos\horse_shows'
     & .\automation\Register-HorseShowsPbixRefreshTask.ps1 -InvokeNow
-
-    # Or the .cmd launcher (cds into automation\, then uses a relative -File):
-    .\automation\Register-HorseShowsPbixRefreshTask.cmd -InvokeNow
-
-    .\Register-HorseShowsPbixRefreshTask.ps1 -At 06:00 -InvokeNow
-    .\Register-HorseShowsPbixRefreshTask.ps1 -Unregister
 #>
 [CmdletBinding()]
 param(
@@ -36,10 +27,9 @@ param(
     [ValidateRange(1, 24)]
     [int]$RepeatHours = 8,
 
-    # Optional override. Default is this script's repo (via $PSScriptRoot), which
-    # is correct when you launch Register-HorseShowsPbixRefreshTask from the clone.
-    # Only set this when registering a task that should point at a different checkout.
     [string]$ReposRoot,
+
+    [string]$LauncherDir,
 
     [switch]$Disabled,
     [switch]$InvokeNow,
@@ -63,6 +53,11 @@ if ($ReposRoot) {
     $Repo = Split-Path -Parent (Split-Path -Parent $fromRoot)
 }
 
+if (-not $LauncherDir) {
+    $home = if ($env:RESULTS_AUTOMATION_HOME) { $env:RESULTS_AUTOMATION_HOME } else { 'C:\Users\mw\ResultsAutomation' }
+    $LauncherDir = Join-Path $home 'HorseShowsPbixRefresh'
+}
+
 $existing = Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -ErrorAction SilentlyContinue
 
 if ($Unregister) {
@@ -79,8 +74,9 @@ if ($Unregister) {
 }
 
 if (-not (Test-Path -LiteralPath $Script)) { throw "Runner script missing: $Script" }
-$prompt = Join-Path (Split-Path -Parent $Script) 'HorseShowsPbixRefresh.prompt.txt'
-$refresh = Join-Path (Split-Path -Parent $Script) 'Refresh-HorseShowsPbix.ps1'
+$automationDir = Split-Path -Parent $Script
+$prompt = Join-Path $automationDir 'HorseShowsPbixRefresh.prompt.txt'
+$refresh = Join-Path $automationDir 'Refresh-HorseShowsPbix.ps1'
 foreach ($required in @($prompt, $refresh)) {
     if (-not (Test-Path -LiteralPath $required)) { throw "Required file missing: $required" }
 }
@@ -88,6 +84,47 @@ foreach ($required in @($prompt, $refresh)) {
 if ($existing -and $existing.State -eq 'Running' -and -not $Force) {
     throw "$TaskName is running. Re-registering would end that run; pass -Force if that is what you want."
 }
+
+if ($LauncherDir -match '\s') {
+    throw "LauncherDir must not contain spaces (got '$LauncherDir'). Use C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh."
+}
+
+New-Item -ItemType Directory -Force -Path $LauncherDir | Out-Null
+
+# cmd.exe cd /d with quotes handles OneDrive spaces; -File stays relative.
+$runCmdPath = Join-Path $LauncherDir 'Run.cmd'
+$dryCmdPath = Join-Path $LauncherDir 'DryRun.cmd'
+$repoCmd = Join-Path $LauncherDir 'RepoPath.txt'
+
+$runCmd = @"
+@echo off
+REM Space-free task entrypoint. Do not edit the scheduled task to point at OneDrive.
+cd /d "$automationDir"
+if errorlevel 1 (
+  echo Failed to cd into automation dir.
+  exit /b 1
+)
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Run-HorseShowsPbixRefreshAgent.ps1" %*
+exit /b %ERRORLEVEL%
+"@
+
+$dryCmd = @"
+@echo off
+cd /d "$automationDir"
+if errorlevel 1 (
+  echo Failed to cd into automation dir.
+  exit /b 1
+)
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\Run-HorseShowsPbixRefreshAgent.ps1" -SkipAgent -DryRun
+exit /b %ERRORLEVEL%
+"@
+
+Set-Content -LiteralPath $runCmdPath -Value $runCmd -Encoding ASCII
+Set-Content -LiteralPath $dryCmdPath -Value $dryCmd -Encoding ASCII
+Set-Content -LiteralPath $repoCmd -Value $Repo -Encoding ASCII
+
+Write-Host ("Launcher:  {0}" -f $runCmdPath)
+Write-Host ("Automation:{0}" -f $automationDir)
 
 $trigger = New-ScheduledTaskTrigger -Once -At $At -RepetitionInterval (New-TimeSpan -Hours $RepeatHours)
 
@@ -103,18 +140,13 @@ $settings = New-ScheduledTaskSettingsSet @settingsArgs
 
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
 
-# Critical: never put the full OneDrive path in -File. Task Scheduler and
-# powershell.exe both split on the space in "OneDrive - timberwilde.net".
-# Put the spaced path only in WorkingDirectory; keep -File relative.
-$workDir = Split-Path -Parent $Script
-$actionArgs = '-NoProfile -ExecutionPolicy Bypass -File .\Run-HorseShowsPbixRefreshAgent.ps1'
+# Execute a path with NO spaces. Arguments empty — Run.cmd owns the rest.
 $action = New-ScheduledTaskAction `
-    -Execute 'powershell.exe' `
-    -Argument $actionArgs `
-    -WorkingDirectory $workDir
+    -Execute $runCmdPath `
+    -WorkingDirectory $LauncherDir
 
-Write-Host ("Task action: powershell.exe {0}" -f $actionArgs)
-Write-Host ("Task cwd:    {0}" -f $workDir)
+Write-Host ("Task action: {0}" -f $runCmdPath)
+Write-Host ("Task cwd:    {0}" -f $LauncherDir)
 
 Register-ScheduledTask `
     -TaskName $TaskName `
@@ -123,28 +155,25 @@ Register-ScheduledTask `
     -Trigger $trigger `
     -Settings $settings `
     -Principal $principal `
-    -Description 'Every 8 hours: local Cursor agent refreshes PowerBI\HorseShows.pbix from the HorseShows SQL Server. Interactive logon required for Power BI Desktop.' `
+    -Description 'Every 8 hours: local Cursor agent refreshes PowerBI\HorseShows.pbix. Entrypoint is ResultsAutomation\HorseShowsPbixRefresh\Run.cmd (avoids OneDrive spaces in powershell -File).' `
     -Force | Out-Null
 
 $task = Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath
 Write-Host ("Registered: {0}{1}" -f $TaskPath, $TaskName)
-Write-Host ("            -> {0}" -f $Script)
+Write-Host ("            -> {0}" -f $runCmdPath)
 Write-Host ("            every {0} hour(s) from {1:t}, state {2}, time limit {3}, {4}" -f
     $RepeatHours, $At, $task.State, $task.Settings.ExecutionTimeLimit, $task.Settings.MultipleInstances)
 Write-Host ''
-Write-Host 'This task needs an interactive Windows session (Power BI Desktop).'
-Write-Host 'Cursor CLI (agent) is preferred; the runner falls back to Refresh-HorseShowsPbix.ps1.'
-Write-Host ''
-Write-Host 'In Cursor, the in-session equivalent (stops when Cursor quits) is:'
-Write-Host '  /loop every 8 hours'
-Write-Host '  then paste automation\HorseShowsPbixRefresh.prompt.txt'
+Write-Host 'Smoke-test without Task Scheduler:'
+Write-Host ('  cmd /c "{0}"' -f $dryCmdPath)
 Write-Host ''
 
 if ($InvokeNow) {
     Start-ScheduledTask -TaskPath $TaskPath -TaskName $TaskName
-    Write-Host "Started: $TaskPath$TaskName"
+    Write-Host ('Started: {0}{1}' -f $TaskPath, $TaskName)
 }
 else {
     Write-Host 'To run once now:'
     Write-Host ("  Start-ScheduledTask -TaskPath '{0}' -TaskName '{1}'" -f $TaskPath, $TaskName)
+    Write-Host ('  cmd /c "{0}"' -f $runCmdPath)
 }
