@@ -68,6 +68,8 @@ def main() -> None:
         fail("scheduled task default is not every 8 hours")
     if "Run-HorseShowsPbixRefreshAgent.ps1" not in register:
         fail("scheduled task does not launch the Cursor agent runner")
+    if "-Command" not in register or "& '" not in register.replace('`', ''):
+        fail("scheduled task must use -Command with a single-quoted path (Task Scheduler strips -File quotes)")
     if "LogonType Interactive" not in register:
         fail("scheduled task must use an interactive logon for Power BI Desktop")
     if "IgnoreNew" not in register:

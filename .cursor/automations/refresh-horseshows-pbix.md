@@ -10,29 +10,33 @@ Use the text in `automation/HorseShowsPbixRefresh.prompt.txt` unchanged.
 
 ## Enable on the Windows machine
 
-1. Clone the repo with Git LFS and pull the pbix:
+1. Clone / update the repo with Git LFS and pull the pbix:
 
    ```powershell
-   git clone https://github.com/mwtorq/horse_shows.git
-   cd horse_shows
+   Set-Location 'C:\Users\mw\OneDrive - timberwilde.net\repos\horse_shows'
+   git pull
    git lfs pull --include="PowerBI/HorseShows.pbix"
    ```
 
 2. Install Cursor CLI if needed (`irm 'https://cursor.com/install?win32=true' | iex`) and sign in, or set `CURSOR_API_KEY`.
 
-3. Register the 8-hour task (enabled, IgnoreNew, interactive logon).
-   Quote the path — the OneDrive folder name contains spaces:
+3. Register the 8-hour task from **inside** that repo session (avoids `powershell -File` path splitting):
 
    ```powershell
-   cd "C:\Users\mw\OneDrive - timberwilde.net\repos\horse_shows"
-   powershell -NoProfile -ExecutionPolicy Bypass -File ".\automation\Register-HorseShowsPbixRefreshTask.ps1" -InvokeNow
+   Set-Location 'C:\Users\mw\OneDrive - timberwilde.net\repos\horse_shows'
+   & .\automation\Register-HorseShowsPbixRefreshTask.ps1 -InvokeNow
    ```
 
-   Or double-click / run the quote-safe wrapper:
+   Or from cmd.exe / Explorer:
 
    ```text
    automation\Register-HorseShowsPbixRefreshTask.cmd -InvokeNow
    ```
+
+   Do **not** run an unquoted
+   `powershell -File C:\Users\mw\OneDrive - timberwilde.net\...`.
+   Task Scheduler also cannot use `-File "path with spaces"` reliably; the
+   register script now uses `-Command "& '...'"` for the task action.
 
 4. Optional in-session loop while Cursor stays open:
 

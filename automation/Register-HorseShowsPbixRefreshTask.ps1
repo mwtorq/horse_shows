@@ -19,11 +19,12 @@
                           at the next logon.
 
 .EXAMPLE
-    # Prefer the .cmd launcher when the repo lives under OneDrive (spaces in the path):
-    .\Register-HorseShowsPbixRefreshTask.cmd -InvokeNow
+    # From PowerShell already in the repo (best — no -File full path):
+    Set-Location 'C:\Users\mw\OneDrive - timberwilde.net\repos\horse_shows'
+    & .\automation\Register-HorseShowsPbixRefreshTask.ps1 -InvokeNow
 
-    # Or quote -File yourself:
-    powershell -NoProfile -ExecutionPolicy Bypass -File ".\automation\Register-HorseShowsPbixRefreshTask.ps1" -InvokeNow
+    # Or the .cmd launcher (cds into automation\, then uses a relative -File):
+    .\automation\Register-HorseShowsPbixRefreshTask.cmd -InvokeNow
 
     .\Register-HorseShowsPbixRefreshTask.ps1 -At 06:00 -InvokeNow
     .\Register-HorseShowsPbixRefreshTask.ps1 -Unregister
@@ -102,10 +103,20 @@ $settings = New-ScheduledTaskSettingsSet @settingsArgs
 
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
 
+# Task Scheduler drops the double quotes around -File paths that contain spaces
+# (OneDrive - timberwilde.net), so powershell.exe only sees C:\Users\mw\OneDrive.
+# -Command with a single-quoted path survives that. Escape any ' in the path by doubling.
+$workDir = Split-Path -Parent $Script
+$scriptLiteral = $Script.Replace("'", "''")
+$actionArgs = "-NoProfile -ExecutionPolicy Bypass -Command `"Set-Location -LiteralPath '{0}'; & '{1}'`"" -f
+    $workDir.Replace("'", "''"),
+    $scriptLiteral
 $action = New-ScheduledTaskAction `
     -Execute 'powershell.exe' `
-    -Argument ('-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $Script) `
-    -WorkingDirectory (Split-Path -Parent $Script)
+    -Argument $actionArgs `
+    -WorkingDirectory $workDir
+
+Write-Host ("Task action: powershell.exe {0}" -f $actionArgs)
 
 Register-ScheduledTask `
     -TaskName $TaskName `
