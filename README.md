@@ -17,6 +17,13 @@ The runners in `automation\` are driven by Windows Scheduled Tasks under
 - `Run-HorseShowsCatchup.ps1` — backfills a year of class results one month at a time.
 - `NonPlacingQueue.ps1` — dot-sourced by both non-placing paths. Mirrors the queue query in
   `scrape_class_nonplacing_results.py` and works out where to enter it.
+- `Run-HorseShowsPbixRefreshAgent.ps1` — local Cursor agent that refreshes
+  `PowerBI\HorseShows.pbix` from SQL Server. `Register-HorseShowsPbixRefreshTask.ps1`
+  schedules it every **8 hours** (interactive logon, IgnoreNew). The agent follows
+  `.cursor/skills/refresh-horseshows-pbix` and runs `Refresh-HorseShowsPbix.ps1`.
+  If Cursor CLI is missing, the wrapper runs the refresh script directly. Setup:
+  `.cursor/automations/refresh-horseshows-pbix.md`. This does **not** commit the
+  pbix.
 
 ## Scripts
 

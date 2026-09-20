@@ -1,0 +1,7 @@
+Refresh PowerBI/HorseShows.pbix from the local HorseShows SQL Server.
+
+Follow the refresh-horseshows-pbix skill.
+
+Run automation/Refresh-HorseShowsPbix.ps1 from this repo. Diagnose any failure and retry once if the failure looks transient (Power BI Desktop still starting, Analysis Services port not published yet, or a brief SQL lock). Do not scrape. Do not commit HorseShows.pbix. Do not open a pull request. Do not change unrelated files.
+
+When finished, write a short run summary only: success or failure, pbix path, Analysis Services port if known, model LastProcessed, file LastWriteTime, row counts if captured, and the log path.
