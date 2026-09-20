@@ -20,10 +20,18 @@ Use the text in `automation/HorseShowsPbixRefresh.prompt.txt` unchanged.
 
 2. Install Cursor CLI if needed (`irm 'https://cursor.com/install?win32=true' | iex`) and sign in, or set `CURSOR_API_KEY`.
 
-3. Register the 8-hour task (enabled, IgnoreNew, interactive logon):
+3. Register the 8-hour task (enabled, IgnoreNew, interactive logon).
+   Quote the path — the OneDrive folder name contains spaces:
 
    ```powershell
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\automation\Register-HorseShowsPbixRefreshTask.ps1
+   cd "C:\Users\mw\OneDrive - timberwilde.net\repos\horse_shows"
+   powershell -NoProfile -ExecutionPolicy Bypass -File ".\automation\Register-HorseShowsPbixRefreshTask.ps1" -InvokeNow
+   ```
+
+   Or double-click / run the quote-safe wrapper:
+
+   ```text
+   automation\Register-HorseShowsPbixRefreshTask.cmd -InvokeNow
    ```
 
 4. Optional in-session loop while Cursor stays open:

@@ -19,7 +19,12 @@
                           at the next logon.
 
 .EXAMPLE
-    .\Register-HorseShowsPbixRefreshTask.ps1
+    # Prefer the .cmd launcher when the repo lives under OneDrive (spaces in the path):
+    .\Register-HorseShowsPbixRefreshTask.cmd -InvokeNow
+
+    # Or quote -File yourself:
+    powershell -NoProfile -ExecutionPolicy Bypass -File ".\automation\Register-HorseShowsPbixRefreshTask.ps1" -InvokeNow
+
     .\Register-HorseShowsPbixRefreshTask.ps1 -At 06:00 -InvokeNow
     .\Register-HorseShowsPbixRefreshTask.ps1 -Unregister
 #>
@@ -30,7 +35,10 @@ param(
     [ValidateRange(1, 24)]
     [int]$RepeatHours = 8,
 
-    [string]$ReposRoot = 'c:\Users\mw\OneDrive - timberwilde.net\repos',
+    # Optional override. Default is this script's repo (via $PSScriptRoot), which
+    # is correct when you launch Register-HorseShowsPbixRefreshTask from the clone.
+    # Only set this when registering a task that should point at a different checkout.
+    [string]$ReposRoot,
 
     [switch]$Disabled,
     [switch]$InvokeNow,
@@ -44,18 +52,14 @@ $ErrorActionPreference = 'Stop'
 $TaskPath = '\ResultsAutomation\'
 $TaskName = 'ResultsAutomation - Horse Shows PBIX Refresh'
 $Repo     = Split-Path -Parent $PSScriptRoot
+$Script   = Join-Path $PSScriptRoot 'Run-HorseShowsPbixRefreshAgent.ps1'
 if ($ReposRoot) {
     $fromRoot = Join-Path $ReposRoot 'horse_shows\automation\Run-HorseShowsPbixRefreshAgent.ps1'
-    if (Test-Path -LiteralPath $fromRoot) {
-        $Script = $fromRoot
-        $Repo = Split-Path -Parent (Split-Path -Parent $fromRoot)
+    if (-not (Test-Path -LiteralPath $fromRoot)) {
+        throw "ReposRoot override did not contain the runner: $fromRoot"
     }
-    else {
-        $Script = Join-Path $PSScriptRoot 'Run-HorseShowsPbixRefreshAgent.ps1'
-    }
-}
-else {
-    $Script = Join-Path $PSScriptRoot 'Run-HorseShowsPbixRefreshAgent.ps1'
+    $Script = $fromRoot
+    $Repo = Split-Path -Parent (Split-Path -Parent $fromRoot)
 }
 
 $existing = Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -ErrorAction SilentlyContinue

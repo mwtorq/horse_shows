@@ -20,6 +20,7 @@ REQUIRED = [
     REPO / "automation" / "Refresh-HorseShowsPbix.ps1",
     REPO / "automation" / "Run-HorseShowsPbixRefreshAgent.ps1",
     REPO / "automation" / "Register-HorseShowsPbixRefreshTask.ps1",
+    REPO / "automation" / "Register-HorseShowsPbixRefreshTask.cmd",
     REPO / "automation" / "HorseShowsPbixRefresh.prompt.txt",
     REPO / ".cursor" / "skills" / "refresh-horseshows-pbix" / "SKILL.md",
     REPO / ".cursor" / "automations" / "refresh-horseshows-pbix.md",
