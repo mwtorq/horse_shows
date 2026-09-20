@@ -68,13 +68,109 @@ function Get-PbiExe {
     throw 'PBIDesktop.exe not found. Install Power BI Desktop.'
 }
 
-function Get-PbiBinDir {
-    $exe = Get-PbiExe
-    $dir = Split-Path -Parent $exe
-    if (Test-Path -LiteralPath (Join-Path $dir 'Microsoft.AnalysisServices.Tabular.dll')) { return $dir }
-    $alt = Join-Path ${env:ProgramFiles} 'Microsoft Power BI Desktop\bin'
-    if (Test-Path -LiteralPath (Join-Path $alt 'Microsoft.AnalysisServices.Tabular.dll')) { return $alt }
-    return $dir
+function Get-TomSearchRoots {
+    $roots = New-Object System.Collections.Generic.List[string]
+    try {
+        $exe = Get-PbiExe
+        $roots.Add((Split-Path -Parent $exe)) | Out-Null
+    } catch { }
+    foreach ($r in @(
+        (Join-Path ${env:ProgramFiles} 'Microsoft Power BI Desktop\bin'),
+        (Join-Path ${env:ProgramFiles} 'Microsoft Power BI Desktop'),
+        (Join-Path ${env:LocalAppData} 'Microsoft\Power BI Desktop')
+    )) {
+        if ($r) { $roots.Add($r) | Out-Null }
+    }
+    Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'Packages') -Filter 'Microsoft.MicrosoftPowerBIDesktop_*' -Directory -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            $roots.Add((Join-Path $_.FullName 'LocalCache\Local\Microsoft\Power BI Desktop\bin')) | Out-Null
+            $roots.Add((Join-Path $_.FullName 'LocalCache\Local\Microsoft\Power BI Desktop')) | Out-Null
+        }
+    $tomHome = if ($env:RESULTS_AUTOMATION_HOME) {
+        Join-Path $env:RESULTS_AUTOMATION_HOME 'tom_nuget'
+    } else {
+        'C:\Users\mw\ResultsAutomation\tom_nuget'
+    }
+    $roots.Add((Join-Path $tomHome 'Microsoft.AnalysisServices.retail.amd64\lib\net45')) | Out-Null
+    $roots.Add((Join-Path $tomHome 'Microsoft.AnalysisServices.retail.amd64\lib\net472')) | Out-Null
+    $roots.Add((Join-Path $tomHome 'Microsoft.AnalysisServices.retail.amd64\lib\net8.0')) | Out-Null
+    $roots.Add((Join-Path $env:TEMP 'tom_nuget\Microsoft.AnalysisServices.retail.amd64\lib\net45')) | Out-Null
+    $roots.Add((Join-Path $env:TEMP 'tom_nuget\Microsoft.AnalysisServices.retail.amd64\lib\net8.0')) | Out-Null
+    return @($roots | Select-Object -Unique)
+}
+
+function Find-TomDirectory {
+    $need = 'Microsoft.AnalysisServices.Tabular.dll'
+    foreach ($root in Get-TomSearchRoots) {
+        if (-not $root -or -not (Test-Path -LiteralPath $root)) { continue }
+        $direct = Join-Path $root $need
+        if (Test-Path -LiteralPath $direct) { return $root }
+        $hit = Get-ChildItem -Path $root -Filter $need -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($hit) { return $hit.DirectoryName }
+    }
+    return $null
+}
+
+function Install-TomFromNuget {
+    $tomHome = if ($env:RESULTS_AUTOMATION_HOME) {
+        Join-Path $env:RESULTS_AUTOMATION_HOME 'tom_nuget'
+    } else {
+        'C:\Users\mw\ResultsAutomation\tom_nuget'
+    }
+    New-Item -ItemType Directory -Force -Path $tomHome | Out-Null
+    $pkgDir = Join-Path $tomHome 'Microsoft.AnalysisServices.retail.amd64'
+    $marker = Join-Path $pkgDir 'lib'
+    if (Test-Path -LiteralPath $marker) {
+        Write-Log ("TOM NuGet already present under {0}" -f $tomHome)
+        return
+    }
+    $zip = Join-Path $tomHome 'Microsoft.AnalysisServices.retail.amd64.nupkg.zip'
+    $url = 'https://www.nuget.org/api/v2/package/Microsoft.AnalysisServices.retail.amd64'
+    Write-Log ("Downloading TOM NuGet from {0}" -f $url)
+    Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+    if (Test-Path -LiteralPath $pkgDir) { Remove-Item -LiteralPath $pkgDir -Recurse -Force }
+    # nupkg is a zip
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $pkgDir)
+    Write-Log ("Extracted TOM NuGet to {0}" -f $pkgDir)
+}
+
+function Import-TomAssemblies {
+    $dir = Find-TomDirectory
+    if (-not $dir) {
+        Write-Log 'TOM DLLs not found next to Power BI Desktop; installing NuGet package...' 'WARN'
+        Install-TomFromNuget
+        $dir = Find-TomDirectory
+    }
+    if (-not $dir) {
+        throw 'Microsoft.AnalysisServices.Tabular.dll not found after NuGet install.'
+    }
+    $names = @(
+        'Microsoft.AnalysisServices.Core.dll',
+        'Microsoft.AnalysisServices.dll',
+        'Microsoft.AnalysisServices.Tabular.dll'
+    )
+    foreach ($n in $names) {
+        $dll = Join-Path $dir $n
+        if (-not (Test-Path -LiteralPath $dll)) {
+            # Some packages omit Core.dll; try loading what exists and continue.
+            Write-Log ("Optional/missing DLL skipped: {0}" -f $dll) 'WARN'
+            continue
+        }
+        try { Add-Type -Path $dll } catch {
+            if ($_.Exception.Message -notmatch 'already exists|duplicate') { throw }
+        }
+    }
+    $tabular = Join-Path $dir 'Microsoft.AnalysisServices.Tabular.dll'
+    if (-not (Test-Path -LiteralPath $tabular)) {
+        throw "Missing required DLL: $tabular"
+    }
+    # Ensure Tabular is loaded even if loop skipped somehow
+    try { Add-Type -Path $tabular } catch {
+        if ($_.Exception.Message -notmatch 'already exists|duplicate') { throw }
+    }
+    Write-Log ("Loaded TOM from {0}" -f $dir)
 }
 
 function Get-OpenPbixProcess([string]$Path) {
@@ -156,23 +252,6 @@ function Wait-ModelPort([System.Diagnostics.Process]$Desktop, [int]$TimeoutSec) 
         Start-Sleep -Seconds 3
     }
     throw "Timed out waiting for msmdsrv port after $($TimeoutSec)s"
-}
-
-function Import-TomAssemblies {
-    $bin = Get-PbiBinDir
-    $names = @(
-        'Microsoft.AnalysisServices.Core.dll',
-        'Microsoft.AnalysisServices.dll',
-        'Microsoft.AnalysisServices.Tabular.dll'
-    )
-    foreach ($n in $names) {
-        $dll = Join-Path $bin $n
-        if (-not (Test-Path -LiteralPath $dll)) { throw "Missing TOM DLL: $dll" }
-        try { Add-Type -Path $dll } catch {
-            if ($_.Exception.Message -notmatch 'already exists|duplicate') { throw }
-        }
-    }
-    Write-Log ("Loaded TOM from {0}" -f $bin)
 }
 
 function Invoke-TomFullRefresh([int]$Port) {
