@@ -36,8 +36,8 @@ $Refresh = Join-Path (Join-Path $Repo 'automation') 'Refresh-HorseShowsPbix.ps1'
 if (-not (Test-Path -LiteralPath $Refresh)) { throw "Refresh script missing: $Refresh" }
 
 if (-not $LauncherDir) {
-    $home = if ($env:RESULTS_AUTOMATION_HOME) { $env:RESULTS_AUTOMATION_HOME } else { 'C:\Users\mw\ResultsAutomation' }
-    $LauncherDir = Join-Path $home 'HorseShowsPbixRefresh'
+    $resultsHome = if ($env:RESULTS_AUTOMATION_HOME) { $env:RESULTS_AUTOMATION_HOME } else { 'C:\Users\mw\ResultsAutomation' }
+    $LauncherDir = Join-Path $resultsHome 'HorseShowsPbixRefresh'
 }
 if ($LauncherDir -match '\s') { throw "LauncherDir must not contain spaces: $LauncherDir" }
 
