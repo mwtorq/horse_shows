@@ -13,14 +13,29 @@ No Cursor agent. No TOM / Analysis Services scripting.
 
 Paste the contents of `automation/PASTE_TO_INSTALL.ps1`.
 
-That writes `C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\Refresh.ps1`
-and registers `\ResultsAutomation\ResultsAutomation - Horse Shows PBIX Refresh`.
+That writes:
+
+- `C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\Refresh.ps1`
+- `C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\Run.cmd`
+- scheduled task `\ResultsAutomation\ResultsAutomation - Horse Shows PBIX Refresh`
+
+Then it **runs the refresh in that same PowerShell window** (needed for SendKeys).
 
 ## Run once
+
+Double-click:
+
+```text
+C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\Run.cmd
+```
+
+Or:
 
 ```text
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\Refresh.ps1
 ```
+
+Do **not** rely on Task Scheduler → Run for a manual test; use `Run.cmd` so SendKeys hits your desktop.
 
 Log: `C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\refresh.log`
 
