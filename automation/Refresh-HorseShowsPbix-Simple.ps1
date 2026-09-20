@@ -112,6 +112,30 @@ function Find-TomDirectory {
     return $null
 }
 
+function Get-TomNugetLibDir {
+    $tomHome = if ($env:RESULTS_AUTOMATION_HOME) {
+        Join-Path $env:RESULTS_AUTOMATION_HOME 'tom_nuget'
+    } else {
+        'C:\Users\mw\ResultsAutomation\tom_nuget'
+    }
+    foreach ($rel in @(
+        'Microsoft.AnalysisServices.retail.amd64\lib\net472',
+        'Microsoft.AnalysisServices.retail.amd64\lib\net45',
+        'Microsoft.AnalysisServices.retail.amd64\lib\net8.0',
+        'Microsoft.AnalysisServices.retail.amd64\lib\netstandard2.0'
+    )) {
+        $cand = Join-Path $tomHome $rel
+        if (Test-Path -LiteralPath (Join-Path $cand 'Microsoft.AnalysisServices.Tabular.dll')) {
+            return $cand
+        }
+    }
+    # Any Tabular.dll under tom_nuget
+    $hit = Get-ChildItem -Path $tomHome -Filter 'Microsoft.AnalysisServices.Tabular.dll' -Recurse -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($hit) { return $hit.DirectoryName }
+    return $null
+}
+
 function Install-TomFromNuget {
     $tomHome = if ($env:RESULTS_AUTOMATION_HOME) {
         Join-Path $env:RESULTS_AUTOMATION_HOME 'tom_nuget'
@@ -119,33 +143,39 @@ function Install-TomFromNuget {
         'C:\Users\mw\ResultsAutomation\tom_nuget'
     }
     New-Item -ItemType Directory -Force -Path $tomHome | Out-Null
-    $pkgDir = Join-Path $tomHome 'Microsoft.AnalysisServices.retail.amd64'
-    $marker = Join-Path $pkgDir 'lib'
-    if (Test-Path -LiteralPath $marker) {
-        Write-Log ("TOM NuGet already present under {0}" -f $tomHome)
-        return
+    $existing = Get-TomNugetLibDir
+    if ($existing) {
+        Write-Log ("TOM NuGet already present: {0}" -f $existing)
+        return $existing
     }
+    $pkgDir = Join-Path $tomHome 'Microsoft.AnalysisServices.retail.amd64'
     $zip = Join-Path $tomHome 'Microsoft.AnalysisServices.retail.amd64.nupkg.zip'
     $url = 'https://www.nuget.org/api/v2/package/Microsoft.AnalysisServices.retail.amd64'
-    Write-Log ("Downloading TOM NuGet from {0}" -f $url)
+    Write-Log ("DOWNLOADING TOM NuGet from {0}" -f $url)
+    Write-Host ">>> DOWNLOADING TOM NuGet package (one-time)..."
     Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+    $len = (Get-Item -LiteralPath $zip).Length
+    Write-Log ("Downloaded nupkg size={0:N0} bytes -> {1}" -f $len, $zip)
+    Write-Host (">>> Downloaded {0:N0} bytes" -f $len)
     if (Test-Path -LiteralPath $pkgDir) { Remove-Item -LiteralPath $pkgDir -Recurse -Force }
-    # nupkg is a zip
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $pkgDir)
     Write-Log ("Extracted TOM NuGet to {0}" -f $pkgDir)
+    Write-Host ">>> Extracted TOM NuGet"
+    $lib = Get-TomNugetLibDir
+    if (-not $lib) { throw "NuGet extract did not contain Microsoft.AnalysisServices.Tabular.dll under $tomHome" }
+    return $lib
 }
 
 function Import-TomAssemblies {
-    $dir = Find-TomDirectory
-    if (-not $dir) {
-        Write-Log 'TOM DLLs not found next to Power BI Desktop; installing NuGet package...' 'WARN'
-        Install-TomFromNuget
-        $dir = Find-TomDirectory
-    }
+    Write-Log 'Ensuring TOM assemblies (NuGet preferred)...'
+    # Always ensure NuGet package exists first so we never depend on PBI bin shipping TOM.
+    $dir = Install-TomFromNuget
+    if (-not $dir) { $dir = Find-TomDirectory }
     if (-not $dir) {
         throw 'Microsoft.AnalysisServices.Tabular.dll not found after NuGet install.'
     }
+    Write-Log ("Using TOM directory: {0}" -f $dir)
     $names = @(
         'Microsoft.AnalysisServices.Core.dll',
         'Microsoft.AnalysisServices.dll',
@@ -154,10 +184,10 @@ function Import-TomAssemblies {
     foreach ($n in $names) {
         $dll = Join-Path $dir $n
         if (-not (Test-Path -LiteralPath $dll)) {
-            # Some packages omit Core.dll; try loading what exists and continue.
-            Write-Log ("Optional/missing DLL skipped: {0}" -f $dll) 'WARN'
+            Write-Log ("DLL not in folder (will try others): {0}" -f $dll) 'WARN'
             continue
         }
+        Write-Log ("Loading {0}" -f $dll)
         try { Add-Type -Path $dll } catch {
             if ($_.Exception.Message -notmatch 'already exists|duplicate') { throw }
         }
@@ -166,7 +196,6 @@ function Import-TomAssemblies {
     if (-not (Test-Path -LiteralPath $tabular)) {
         throw "Missing required DLL: $tabular"
     }
-    # Ensure Tabular is loaded even if loop skipped somehow
     try { Add-Type -Path $tabular } catch {
         if ($_.Exception.Message -notmatch 'already exists|duplicate') { throw }
     }
