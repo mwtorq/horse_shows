@@ -40,7 +40,7 @@ if (-not $SkipRegister) {
 $refresh = Join-Path $launchDir 'Refresh.ps1'
 $runCmd = Join-Path $launchDir 'Run.cmd'
 if (-not (Test-Path -LiteralPath $refresh)) {
-    throw "Refresh.ps1 missing at $refresh — registration did not install the launcher."
+    throw "Refresh.ps1 missing at $refresh - registration did not install the launcher."
 }
 
 if ($InvokeNow) {

@@ -75,6 +75,22 @@ def main() -> None:
     if "Run.cmd" not in docs or "Refresh.ps1" not in docs:
         fail("automation doc must document Run.cmd and Refresh.ps1")
 
+    agent = (REPO / "automation" / "Run-HorseShowsPbixRefreshAgent.ps1").read_text(encoding="utf-8")
+    if "ResultsAutomation" not in agent or "Refresh.ps1" not in agent:
+        fail("agent shim must delegate to ResultsAutomation Refresh.ps1")
+    if "Refresh-HorseShowsPbix.ps1" in agent and "Invoke-DirectRefresh" in agent:
+        fail("agent shim must not call the old TOM refresh path")
+    for ps1_name in (
+        "Refresh-HorseShowsPbix.ps1",
+        "Run-HorseShowsPbixRefreshAgent.ps1",
+        "Enable-HorseShowsPbixRefresh.ps1",
+        "Register-HorseShowsPbixRefreshTask.ps1",
+        "PASTE_TO_INSTALL.ps1",
+    ):
+        raw = (REPO / "automation" / ps1_name).read_bytes()
+        if any(b > 127 for b in raw):
+            fail(f"{ps1_name} must be ASCII-only (Windows PowerShell 5.1 misparses UTF-8 em-dashes)")
+
     pbix = REPO / "PowerBI" / "HorseShows.pbix"
     first_line = pbix.read_text(encoding="utf-8", errors="replace").splitlines()[0]
     if pbix.stat().st_size < 1024 and first_line.startswith("version https://git-lfs.github.com/"):

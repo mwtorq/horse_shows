@@ -117,6 +117,16 @@ exit /b %ERRORLEVEL%
 $runCmdPath = Join-Path $dir 'Run.cmd'
 Set-Content -LiteralPath $runCmdPath -Value $runCmd -Encoding ASCII
 
+# Old agent launchers used Run.ps1 / DryRun.ps1 / Run.cmd pointing at Cursor agent.
+# Overwrite them so any leftover scheduled task still hits the simple refresh.
+$compatPs1 = @'
+$ErrorActionPreference = 'Stop'
+& (Join-Path $PSScriptRoot 'Refresh.ps1')
+exit $LASTEXITCODE
+'@
+Set-Content -LiteralPath (Join-Path $dir 'Run.ps1') -Value $compatPs1 -Encoding ASCII
+Set-Content -LiteralPath (Join-Path $dir 'DryRun.ps1') -Value $compatPs1 -Encoding ASCII
+
 $action = New-ScheduledTaskAction `
     -Execute 'powershell.exe' `
     -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$refreshPath`"" `

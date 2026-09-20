@@ -37,6 +37,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Users\mw\ResultsAutom
 
 Do **not** rely on Task Scheduler → Run for a manual test; use `Run.cmd` so SendKeys hits your desktop.
 
+If an old Cursor-agent task still fires, `Run-HorseShowsPbixRefreshAgent.ps1` is now a shim that calls the same `Refresh.ps1`. Re-paste `PASTE_TO_INSTALL.ps1` so leftover `Run.ps1` launchers are overwritten.
+
 Log: `C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\refresh.log`
 
 ## Requirements
