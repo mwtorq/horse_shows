@@ -14,7 +14,8 @@
 .EXAMPLE
     .\Refresh-HorseShowsPbix.ps1
     .\Refresh-HorseShowsPbix.ps1 -DryRun
-    .\Refresh-HorseShowsPbix.ps1 -TimeoutMinutes 60 -KeepOpen
+    .\Refresh-HorseShowsPbix.ps1 -TimeoutMinutes 60
+    .\Refresh-HorseShowsPbix.ps1 -CloseWhenDone
 #>
 [CmdletBinding()]
 param(
@@ -23,7 +24,13 @@ param(
     [ValidateRange(5, 180)]
     [int]$TimeoutMinutes = 45,
 
+    # Default is to leave Power BI Desktop open after refresh. Pass -CloseWhenDone
+    # only when this run launched Desktop and you want it closed afterward.
+    [switch]$CloseWhenDone,
+
+    # Deprecated alias for leaving Desktop open (now the default).
     [switch]$KeepOpen,
+
     [switch]$SkipSave,
     [switch]$DryRun
 )
@@ -101,6 +108,53 @@ function Test-GitLfsPointer {
     if ($item.Length -gt 1024) { return $false }
     $first = Get-Content -LiteralPath $Path -TotalCount 1 -ErrorAction SilentlyContinue
     return [bool]($first -and $first -like 'version https://git-lfs.github.com/*')
+}
+
+function Assert-PbixReadyToOpen {
+    param([Parameter(Mandatory)][string]$Path)
+    $item = Get-Item -LiteralPath $Path -Force
+    if (Test-GitLfsPointer -Path $Path) {
+        throw "HorseShows.pbix is still a Git LFS pointer ($($item.Length) bytes). Run: git lfs pull --include=`"PowerBI/HorseShows.pbix`""
+    }
+    # This report is ~442 MB. Tiny files mean OneDrive has not hydrated the real pbix yet.
+    if ($item.Length -lt 50MB) {
+        throw ("HorseShows.pbix is only {0:N0} bytes — too small to be the real report. If it is on OneDrive, right-click the file → Always keep on this device, wait for the full download, then retry." -f $item.Length)
+    }
+    # Cloud-only / not fully recalled attributes (Windows / OneDrive).
+    try {
+        $attrs = [int]$item.Attributes
+        # FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x00400000
+        if (($attrs -band 0x00400000) -ne 0) {
+            throw "HorseShows.pbix is still an OneDrive cloud placeholder. Right-click → Always keep on this device, wait until Size on disk is hundreds of MB, then retry."
+        }
+    }
+    catch [System.Management.Automation.RuntimeException] {
+        throw
+    }
+    catch {
+        # Attribute probe is best-effort on non-Windows.
+    }
+}
+
+function Start-PowerBIDesktopWithPbix {
+    param(
+        [Parameter(Mandatory)][string]$DesktopExe,
+        [Parameter(Mandatory)][string]$PbixPath
+    )
+    # Do NOT use Start-Process -ArgumentList @(...) with an OneDrive path.
+    # Windows PowerShell 5.1 splits on the space in "OneDrive - timberwilde.net",
+    # so PBIDesktop only receives C:\Users\mw\OneDrive and never loads the pbix.
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $DesktopExe
+    $psi.Arguments = '"' + $PbixPath + '"'
+    $psi.WorkingDirectory = [System.IO.Path]::GetDirectoryName($PbixPath)
+    $psi.UseShellExecute = $true
+    Write-RefreshLog ("Starting: {0} {1}" -f $DesktopExe, $psi.Arguments)
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    if (-not $proc) {
+        throw "Failed to start Power BI Desktop for $PbixPath"
+    }
+    return $proc
 }
 
 function Get-PowerBIDesktopExe {
@@ -424,6 +478,8 @@ try {
     }
     else {
 
+    Assert-PbixReadyToOpen -Path $resolvedPbix
+
     $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
     $existing = Get-OpenPowerBIDesktopForPbix -TargetPbix $resolvedPbix
     if ($existing) {
@@ -432,9 +488,12 @@ try {
         $script:LaunchedDesktop = $false
     }
     else {
-        Write-RefreshLog "Launching Power BI Desktop"
-        $script:DesktopProcess = Start-Process -FilePath $desktopExe -ArgumentList @("`"$resolvedPbix`"") -PassThru
+        Write-RefreshLog "Launching Power BI Desktop with fully-quoted pbix path"
+        $script:DesktopProcess = Start-PowerBIDesktopWithPbix -DesktopExe $desktopExe -PbixPath $resolvedPbix
         $script:LaunchedDesktop = $true
+        # Large import models need time before msmdsrv publishes a port.
+        Write-RefreshLog 'Waiting 15s for Power BI Desktop to begin loading the pbix...'
+        Start-Sleep -Seconds 15
     }
 
     $port = Wait-ForDesktopModelPort -Desktop $script:DesktopProcess -Deadline $deadline
@@ -466,7 +525,7 @@ catch {
     $exitCode = 1
 }
 finally {
-    if ($script:LaunchedDesktop -and $script:DesktopProcess -and -not $script:DesktopProcess.HasExited -and -not $KeepOpen) {
+    if ($script:LaunchedDesktop -and $script:DesktopProcess -and -not $script:DesktopProcess.HasExited -and $CloseWhenDone -and -not $KeepOpen) {
         Write-RefreshLog ("Closing Power BI Desktop pid {0}" -f $script:DesktopProcess.Id)
         try {
             $script:DesktopProcess.CloseMainWindow() | Out-Null
@@ -477,6 +536,9 @@ finally {
         catch {
             Write-RefreshLog ("Could not close Power BI Desktop: {0}" -f $_.Exception.Message) 'WARN'
         }
+    }
+    elseif ($script:LaunchedDesktop -and $script:DesktopProcess -and -not $script:DesktopProcess.HasExited) {
+        Write-RefreshLog ("Leaving Power BI Desktop open (pid {0}). Pass -CloseWhenDone to close it." -f $script:DesktopProcess.Id)
     }
     $status.FinishedUtc = [datetime]::UtcNow
     try { Save-LastRunStatus -Status ([pscustomobject]$status) } catch { }
