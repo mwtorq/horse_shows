@@ -290,11 +290,18 @@ function Invoke-TomFullRefresh([int]$Port) {
         $cs = 'Data Source=localhost:{0};Application Name=HorseShowsPbixSimple;Connect Timeout=120' -f $Port
         Write-Log ("TOM connect {0}" -f $cs)
         $server.Connect($cs)
+        # Full model refresh against SQL can take a long time; default timeouts are too low.
+        try { $server.Timeout = 7200 } catch { Write-Log ("Could not set server.Timeout: {0}" -f $_.Exception.Message) 'WARN' }
         if ($server.Databases.Count -lt 1) { throw "No tabular DB on localhost:$Port" }
         $db = $server.Databases[0]
         Write-Log ("TOM refresh database '{0}' (LastProcessed={1})" -f $db.Name, $db.LastProcessed)
         $tmsl = '{{ "refresh": {{ "type": "full", "objects": [ {{ "database": "{0}" }} ] }} }}' -f $db.Name
+        Write-Log 'Starting full TMSL refresh NOW. This often takes 10-40+ minutes. Leave Power BI open; more log lines appear when it finishes.'
+        Write-Host '>>> TMSL refresh running (can take a long time). Do not close Power BI.'
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
         $results = $server.Execute($tmsl)
+        $sw.Stop()
+        Write-Log ("TMSL Execute returned after {0:mm\:ss}" -f $sw.Elapsed)
         $errors = @()
         foreach ($result in @($results)) {
             foreach ($msg in @($result.Messages)) {
