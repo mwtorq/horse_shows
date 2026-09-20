@@ -103,20 +103,18 @@ $settings = New-ScheduledTaskSettingsSet @settingsArgs
 
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
 
-# Task Scheduler drops the double quotes around -File paths that contain spaces
-# (OneDrive - timberwilde.net), so powershell.exe only sees C:\Users\mw\OneDrive.
-# -Command with a single-quoted path survives that. Escape any ' in the path by doubling.
+# Critical: never put the full OneDrive path in -File. Task Scheduler and
+# powershell.exe both split on the space in "OneDrive - timberwilde.net".
+# Put the spaced path only in WorkingDirectory; keep -File relative.
 $workDir = Split-Path -Parent $Script
-$scriptLiteral = $Script.Replace("'", "''")
-$actionArgs = "-NoProfile -ExecutionPolicy Bypass -Command `"Set-Location -LiteralPath '{0}'; & '{1}'`"" -f
-    $workDir.Replace("'", "''"),
-    $scriptLiteral
+$actionArgs = '-NoProfile -ExecutionPolicy Bypass -File .\Run-HorseShowsPbixRefreshAgent.ps1'
 $action = New-ScheduledTaskAction `
     -Execute 'powershell.exe' `
     -Argument $actionArgs `
     -WorkingDirectory $workDir
 
 Write-Host ("Task action: powershell.exe {0}" -f $actionArgs)
+Write-Host ("Task cwd:    {0}" -f $workDir)
 
 Register-ScheduledTask `
     -TaskName $TaskName `

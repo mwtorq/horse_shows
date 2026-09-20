@@ -21,6 +21,8 @@ REQUIRED = [
     REPO / "automation" / "Run-HorseShowsPbixRefreshAgent.ps1",
     REPO / "automation" / "Register-HorseShowsPbixRefreshTask.ps1",
     REPO / "automation" / "Register-HorseShowsPbixRefreshTask.cmd",
+    REPO / "automation" / "Run-HorseShowsPbixRefreshAgent.cmd",
+    REPO / "automation" / "Enable-HorseShowsPbixRefresh.ps1",
     REPO / "automation" / "HorseShowsPbixRefresh.prompt.txt",
     REPO / ".cursor" / "skills" / "refresh-horseshows-pbix" / "SKILL.md",
     REPO / ".cursor" / "automations" / "refresh-horseshows-pbix.md",
@@ -68,8 +70,8 @@ def main() -> None:
         fail("scheduled task default is not every 8 hours")
     if "Run-HorseShowsPbixRefreshAgent.ps1" not in register:
         fail("scheduled task does not launch the Cursor agent runner")
-    if "-Command" not in register or "& '" not in register.replace('`', ''):
-        fail("scheduled task must use -Command with a single-quoted path (Task Scheduler strips -File quotes)")
+    if r".\Run-HorseShowsPbixRefreshAgent.ps1" not in register and ".\\Run-HorseShowsPbixRefreshAgent.ps1" not in register:
+        fail("scheduled task must use relative -File with WorkingDirectory (OneDrive spaces)")
     if "LogonType Interactive" not in register:
         fail("scheduled task must use an interactive logon for Power BI Desktop")
     if "IgnoreNew" not in register:
@@ -82,6 +84,8 @@ def main() -> None:
         fail("agent runner is missing headless Cursor CLI flags")
     if "Refresh-HorseShowsPbix.ps1" not in runner:
         fail("agent runner has no script fallback")
+    if r".\Refresh-HorseShowsPbix.ps1" not in runner and ".\\Refresh-HorseShowsPbix.ps1" not in runner:
+        fail("agent runner must invoke refresh via relative -File to avoid OneDrive spaces")
 
     refresh = (REPO / "automation" / "Refresh-HorseShowsPbix.ps1").read_text(encoding="utf-8")
     for needle in (

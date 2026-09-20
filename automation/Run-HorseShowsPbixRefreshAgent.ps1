@@ -10,6 +10,11 @@
     If Cursor CLI is not installed or not authenticated, this wrapper falls back
     to the refresh script so the 8-hour schedule still updates the file.
 
+    Never launches powershell -File with a full OneDrive path. Nested refresh
+    runs use WorkingDirectory + relative -File (.\Refresh-HorseShowsPbix.ps1).
+    Windows PowerShell 5.1 / Task Scheduler both split on the space in
+    "OneDrive - timberwilde.net".
+
 .EXAMPLE
     .\Run-HorseShowsPbixRefreshAgent.ps1
     .\Run-HorseShowsPbixRefreshAgent.ps1 -DryRun
@@ -91,15 +96,46 @@ function Get-CursorAgentExe {
 function Invoke-DirectRefresh {
     param([string]$Reason)
     if ($Reason) { Write-AgentLog $Reason 'WARN' }
-    $refreshArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $RefreshScript, '-TimeoutMinutes', "$TimeoutMinutes")
-    if ($DryRun) { $refreshArgs += '-DryRun' }
+
+    # Relative -File only. WorkingDirectory may contain spaces (OneDrive); -File must not.
+    # Windows PowerShell 5.1 Start-Process ArgumentList arrays also mangle spaced paths.
+    $automationDir = $PSScriptRoot
+    $argLine = '-NoProfile -ExecutionPolicy Bypass -File .\Refresh-HorseShowsPbix.ps1 -TimeoutMinutes {0}' -f $TimeoutMinutes
+    if ($DryRun) { $argLine += ' -DryRun' }
+
     $shell = 'powershell.exe'
     if (-not (Get-Command $shell -ErrorAction SilentlyContinue)) {
         $pwsh = Get-Command pwsh -ErrorAction SilentlyContinue
         if ($pwsh) { $shell = $pwsh.Source } else { throw 'powershell.exe was not found' }
     }
-    Write-AgentLog ("Running refresh script: {0} {1}" -f $shell, ($refreshArgs -join ' '))
-    $proc = Start-Process -FilePath $shell -ArgumentList $refreshArgs -WorkingDirectory $Repo -Wait -PassThru -NoNewWindow
+
+    Write-AgentLog ("Running: {0} (cwd {1}) {2}" -f $shell, $automationDir, $argLine)
+    $proc = Start-Process -FilePath $shell -ArgumentList $argLine -WorkingDirectory $automationDir -Wait -PassThru -NoNewWindow
+    return $proc.ExitCode
+}
+
+function Start-CursorAgentProcess {
+    param(
+        [Parameter(Mandatory)][string]$AgentExe,
+        [Parameter(Mandatory)][string]$Workspace,
+        [Parameter(Mandatory)][string]$PromptText
+    )
+
+    # Single Arguments string — Start-Process array ArgumentList mishandles spaces on PS 5.1.
+    function Quote-Arg([string]$Value) {
+        if ($null -eq $Value) { return '""' }
+        return '"' + ($Value -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"'
+    }
+
+    $argLine = @(
+        '-p', '--force', '--trust', '--sandbox', 'disabled',
+        '--output-format', 'text',
+        '--workspace', (Quote-Arg $Workspace),
+        (Quote-Arg $PromptText)
+    ) -join ' '
+
+    Write-AgentLog ("Starting Cursor agent: {0} {1}" -f $AgentExe, $argLine)
+    $proc = Start-Process -FilePath $AgentExe -ArgumentList $argLine -WorkingDirectory $Workspace -Wait -PassThru -NoNewWindow
     return $proc.ExitCode
 }
 
@@ -121,19 +157,11 @@ try {
             $exitCode = Invoke-DirectRefresh -Reason 'Cursor CLI (agent) was not on PATH. Install with irm https://cursor.com/install?win32=true | iex, or set CURSOR_API_KEY. Falling back to the refresh script.'
         }
         elseif ($DryRun) {
-            Write-AgentLog ("Would run: {0} -p --force --trust --sandbox disabled --workspace {1}" -f $agent, $Repo)
+            Write-AgentLog ("Would run Cursor agent against workspace: {0}" -f $Repo)
             $exitCode = Invoke-DirectRefresh
         }
         else {
-            $agentArgs = @(
-                '-p', '--force', '--trust', '--sandbox', 'disabled',
-                '--output-format', 'text',
-                '--workspace', $Repo,
-                $prompt
-            )
-            Write-AgentLog ("Starting Cursor agent: {0}" -f $agent)
-            $proc = Start-Process -FilePath $agent -ArgumentList $agentArgs -WorkingDirectory $Repo -Wait -PassThru -NoNewWindow
-            $exitCode = $proc.ExitCode
+            $exitCode = Start-CursorAgentProcess -AgentExe $agent -Workspace $Repo -PromptText $prompt
             Write-AgentLog ("Cursor agent exited {0}" -f $exitCode)
             if ($exitCode -ne 0) {
                 $exitCode = Invoke-DirectRefresh -Reason 'Cursor agent failed; retrying with Refresh-HorseShowsPbix.ps1'
