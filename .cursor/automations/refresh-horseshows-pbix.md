@@ -15,23 +15,11 @@ powershell -File "C:\Users\mw\OneDrive - timberwilde.net\..."   # Task Scheduler
 
 ## Install (paste into PowerShell — do not use -File)
 
-1. Open **Windows PowerShell**.
-2. Open `automation/PASTE_TO_INSTALL.ps1` on GitHub / in the repo, copy the whole file.
-3. Paste into PowerShell and press Enter.
+Open **Windows PowerShell** and paste the block in `automation/PASTE_TO_INSTALL.ps1`
+(or the same block from the agent chat). It stashes conflicting untracked files,
+updates `main`, writes the space-free launcher, and dry-runs.
 
-Or paste this short form after the branch exists locally:
-
-```powershell
-Set-Location 'C:\Users\mw\OneDrive - timberwilde.net\repos\horse_shows'
-git fetch origin
-git checkout cursor/horseshows-pbix-refresh-automation
-git pull
-Get-Content -LiteralPath .\automation\PASTE_TO_INSTALL.ps1 -Raw | Invoke-Expression
-```
-
-That writes `C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\Run.cmd` (no spaces)
-and points the scheduled task at it. `Run.cmd` cds into the OneDrive automation
-folder with quotes, then runs `-File .\Run-HorseShowsPbixRefreshAgent.ps1`.
+Do **not** run `powershell -File` against any path under OneDrive.
 
 ## Manual run
 

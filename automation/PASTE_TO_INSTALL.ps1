@@ -1,6 +1,5 @@
 # PASTE THIS ENTIRE BLOCK into Windows PowerShell.
 # Do not use: powershell -File C:\Users\mw\OneDrive - ...
-# That is what causes: Processing -File 'C:\Users\mw\OneDrive' failed...
 
 $ErrorActionPreference = 'Stop'
 
@@ -15,13 +14,18 @@ if (-not (Test-Path -LiteralPath $repo)) {
 
 Set-Location -LiteralPath $repo
 git fetch origin
-git checkout cursor/horseshows-pbix-refresh-automation
-git pull --ff-only
+
+# Untracked local copies of automation/.cursor files block checkout/pull.
+# Stash them (including untracked), then use main (launcher fix is merged).
+$stashName = "pbix-refresh-install-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+git stash push -u -m $stashName -- 2>$null
+git checkout main
+git pull --ff-only origin main
 
 $automationDir = Join-Path $repo 'automation'
 $agent = Join-Path $automationDir 'Run-HorseShowsPbixRefreshAgent.ps1'
 if (-not (Test-Path -LiteralPath $agent)) {
-    throw "Agent script missing after checkout: $agent"
+    throw "Agent script missing after pull: $agent"
 }
 
 New-Item -ItemType Directory -Force -Path $launchDir | Out-Null
@@ -63,3 +67,5 @@ Write-Host ''
 Write-Host 'SUCCESS. Path issue is fixed.'
 Write-Host 'Real refresh now:  cmd /c C:\Users\mw\ResultsAutomation\HorseShowsPbixRefresh\Run.cmd -SkipAgent'
 Write-Host 'Or start task:     Start-ScheduledTask -TaskPath ''\ResultsAutomation\'' -TaskName ''ResultsAutomation - Horse Shows PBIX Refresh'''
+Write-Host ''
+Write-Host "Optional: review stashed local files with  git stash list"
