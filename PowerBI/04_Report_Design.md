@@ -212,6 +212,11 @@ Configure mobile layout for Pages 1 & 2:
 
 ## Refresh Schedule
 
+Local file (`PowerBI/HorseShows.pbix`): a Cursor agent on the Windows machine
+refreshes it every 8 hours. Register that with
+`automation/Register-HorseShowsPbixRefreshTask.ps1`. See
+`.cursor/automations/refresh-horseshows-pbix.md`.
+
 If publishing to Power BI Service:
 - **Recommended:** Daily refresh at 6 AM
 - **Alternative:** Real-time with DirectQuery (higher server load)
