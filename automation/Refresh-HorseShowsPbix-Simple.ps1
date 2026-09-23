@@ -11,9 +11,11 @@ param(
     [int]$LoadTimeoutSec = 420,
     [int]$RefreshWaitSec = 300,
     [int]$PublishTimeoutSec = 900,
+    [string]$WorkspaceName = 'My workspace',
     [switch]$QuickTest,
     [switch]$UiOnly,
-    [switch]$SkipPublish
+    [switch]$SkipPublish,
+    [switch]$PublishOnly
 )
 
 Set-StrictMode -Version Latest
@@ -406,62 +408,95 @@ function Save-Pbix([System.Diagnostics.Process]$Process, [string]$Path, [datetim
     return $false
 }
 
-function Invoke-UiaByNameContains([System.Windows.Automation.AutomationElement]$Window, [string]$NamePart) {
-    if (-not $Window) { return $false }
+function Find-UiaByName([System.Windows.Automation.AutomationElement]$Root, [string]$Name, [bool]$Exact = $true) {
+    if (-not $Root) { return $null }
     Add-Type -AssemblyName UIAutomationClient
     Add-Type -AssemblyName UIAutomationTypes
-    $all = $Window.FindAll(
+    if ($Exact) {
+        $cond = New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::NameProperty, $Name)
+        return $Root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
+    }
+    $all = $Root.FindAll(
         [System.Windows.Automation.TreeScope]::Descendants,
         [System.Windows.Automation.Condition]::TrueCondition)
     foreach ($el in $all) {
         $n = [string]$el.Current.Name
-        if (-not $n -or $n.IndexOf($NamePart, [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
-        try {
-            $pat = $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-            $pat.Invoke()
-            Write-Log ("UIA Invoke contains '{0}' (name='{1}')" -f $NamePart, $n)
-            return $true
-        } catch { }
+        if ($n -and $n.IndexOf($Name, [StringComparison]::OrdinalIgnoreCase) -ge 0) { return $el }
     }
-    return $false
+    return $null
 }
 
-function Try-ClickPublishDialogButtons([System.Diagnostics.Process]$Process) {
-    # Do NOT click ribbon "Publish" again - only confirm / dismiss dialogs.
-    $exact = @(
-        'Replace',
-        'Replace it',
-        'Select',
-        'Got it',
-        'Close'
-    )
-    $win = $null
-    try { $win = Get-UiaWindow -ProcessId $Process.Id } catch { return $false }
-    if (-not $win) { return $false }
-    foreach ($name in $exact) {
-        if (Invoke-UiaByName -Window $win -Name $name) { return $true }
+function Invoke-UiaElement([System.Windows.Automation.AutomationElement]$Element, [string]$Label) {
+    if (-not $Element) { return $false }
+    Add-Type -AssemblyName UIAutomationClient
+    Add-Type -AssemblyName UIAutomationTypes
+    try {
+        $pat = $Element.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+        $pat.Invoke()
+        Write-Log ("UIA Invoke '{0}'" -f $Label)
+        return $true
+    } catch { }
+    try {
+        $sel = $Element.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
+        $sel.Select()
+        Write-Log ("UIA Select '{0}'" -f $Label)
+        return $true
+    } catch { }
+    try {
+        # Fallback: set focus + Enter for list rows that lack Invoke/SelectionItem.
+        $Element.SetFocus()
+        Start-Sleep -Milliseconds 200
+        Add-Type -AssemblyName System.Windows.Forms
+        [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+        Write-Log ("UIA Focus+Enter '{0}'" -f $Label)
+        return $true
+    } catch {
+        Write-Log ("UIA action '{0}' failed: {1}" -f $Label, $_.Exception.Message) 'WARN'
+        return $false
     }
-    foreach ($part in @('Replace', 'Got it', 'Successfully published')) {
-        if (Invoke-UiaByNameContains -Window $win -NamePart $part) { return $true }
-    }
-    return $false
 }
 
-function Publish-Pbix([System.Diagnostics.Process]$Process, [int]$TimeoutSec) {
-    # Desktop ribbon Publish to Power BI Service. Requires signed-in Desktop.
-    # For an already-published HorseShows report: Publish -> workspace Select -> Replace.
+function Get-PublishUiRoot([System.Diagnostics.Process]$Process) {
+    # Prefer a dedicated dialog/window over the main ribbon (avoids re-hitting ribbon Publish).
+    Add-Type -AssemblyName UIAutomationClient
+    Add-Type -AssemblyName UIAutomationTypes
+    $root = [System.Windows.Automation.AutomationElement]::RootElement
+    $pidCond = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ProcessIdProperty, $Process.Id)
+    $wins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $pidCond)
+    $best = $null
+    foreach ($w in $wins) {
+        $n = [string]$w.Current.Name
+        if ($n -match '(?i)publish|replace|power bi') { return $w }
+        if (-not $best) { $best = $w }
+    }
+    if ($best) { return $best }
+    try { return Get-UiaWindow -ProcessId $Process.Id } catch { return $null }
+}
+
+function Publish-Pbix(
+    [System.Diagnostics.Process]$Process,
+    [int]$TimeoutSec,
+    [string]$WorkspaceName = 'My workspace'
+) {
+    # Desktop Publish sequence (do not steal focus in a loop):
+    # 1) Home > Publish (once)
+    # 2) Select workspace ("My workspace")
+    # 3) Select / Publish in that dialog
+    # 4) Replace overwrite (once)
+    # 5) Got it when complete
     Add-Type -AssemblyName System.Windows.Forms
-    Write-Log 'Publishing to Power BI Service (Home > Publish)...'
-    Write-Host '>>> Publishing to Power BI Service. Sign-in/workspace dialogs must not block.'
+    Write-Log ("Publishing to Power BI Service (workspace='{0}')..." -f $WorkspaceName)
+    Write-Host '>>> Publishing to Power BI Service. Leave dialogs alone unless sign-in is required.'
+
+    # Focus once to start Publish only.
     Focus-ProcessWindow -Process $Process
     $win = $null
     try { $win = Get-UiaWindow -ProcessId $Process.Id } catch {
         Write-Log ("UIA window lookup failed before Publish: {0}" -f $_.Exception.Message) 'WARN'
     }
-    $started = $false
-    if (Invoke-UiaByName -Window $win -Name 'Publish') {
-        $started = $true
-    } else {
+    if (-not (Invoke-UiaByName -Window $win -Name 'Publish')) {
         Write-Log 'UIA Publish not found; trying key tips Alt+H, P, U' 'WARN'
         Focus-ProcessWindow -Process $Process
         [System.Windows.Forms.SendKeys]::SendWait('%')
@@ -471,41 +506,106 @@ function Publish-Pbix([System.Diagnostics.Process]$Process, [int]$TimeoutSec) {
         [System.Windows.Forms.SendKeys]::SendWait('p')
         Start-Sleep -Milliseconds 500
         [System.Windows.Forms.SendKeys]::SendWait('u')
-        $started = $true
-        Start-Sleep -Seconds 2
     }
-
-    if (-not $started) {
-        Write-Log 'Could not start Publish UI action.' 'ERROR'
-        return $false
-    }
+    Start-Sleep -Seconds 2
 
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
-    $clicks = 0
-    $idleRounds = 0
+    $stage = 'workspace'   # workspace -> select -> replace -> uploading -> done
+    $workspaceSelected = $false
+    $selectClicked = $false
+    $replaceClicked = $false
+    $gotItClicked = $false
+    $uploadIdle = 0
+
     while ((Get-Date) -lt $deadline) {
         $Process.Refresh()
         if ($Process.HasExited) {
             Write-Log 'PBIDesktop exited during Publish.' 'ERROR'
             return $false
         }
-        Focus-ProcessWindow -Process $Process
-        if (Try-ClickPublishDialogButtons -Process $Process) {
-            $clicks++
-            $idleRounds = 0
+
+        # Do NOT Focus-ProcessWindow here - that steals the user's Cursor/other windows.
+        $ui = Get-PublishUiRoot -Process $Process
+        if (-not $ui) {
             Start-Sleep -Seconds 2
             continue
         }
-        $idleRounds++
-        # After Replace + upload, success dialog eventually appears; a few idle rounds
-        # with prior clicks usually means publish finished or is uploading.
-        if ($clicks -ge 1 -and $idleRounds -ge 8) {
-            Write-Log ("Publish dialog sequence done (clicks={0}). Assuming success/upload complete." -f $clicks)
-            return $true
+
+        if ($stage -eq 'workspace' -and -not $workspaceSelected) {
+            $ws = Find-UiaByName -Root $ui -Name $WorkspaceName -Exact $true
+            if (-not $ws) { $ws = Find-UiaByName -Root $ui -Name $WorkspaceName -Exact $false }
+            if ($ws -and (Invoke-UiaElement -Element $ws -Label ("workspace:{0}" -f $WorkspaceName))) {
+                $workspaceSelected = $true
+                $stage = 'select'
+                Start-Sleep -Seconds 1
+                continue
+            }
         }
-        Start-Sleep -Seconds 3
+
+        if (($stage -eq 'select' -or ($stage -eq 'workspace' -and $workspaceSelected)) -and -not $selectClicked) {
+            foreach ($btn in @('Select', 'Publish')) {
+                $el = Find-UiaByName -Root $ui -Name $btn -Exact $true
+                # Avoid ribbon Publish: only click if we are past workspace selection or name is Select.
+                if ($btn -eq 'Publish' -and -not $workspaceSelected) { continue }
+                if ($el -and (Invoke-UiaElement -Element $el -Label $btn)) {
+                    $selectClicked = $true
+                    $stage = 'replace'
+                    Start-Sleep -Seconds 2
+                    break
+                }
+            }
+            if ($selectClicked) { continue }
+        }
+
+        if ($stage -eq 'replace' -and -not $replaceClicked) {
+            foreach ($btn in @('Replace', 'Replace it')) {
+                $el = Find-UiaByName -Root $ui -Name $btn -Exact $true
+                if (-not $el) { $el = Find-UiaByName -Root $ui -Name $btn -Exact $false }
+                if ($el -and (Invoke-UiaElement -Element $el -Label $btn)) {
+                    $replaceClicked = $true
+                    $stage = 'uploading'
+                    Write-Log 'Replace confirmed; waiting for upload/success dialog (no focus steal)...'
+                    Start-Sleep -Seconds 3
+                    break
+                }
+            }
+            if ($replaceClicked) { continue }
+            # Replace dialog may take a moment after Select.
+            $uploadIdle++
+            if ($uploadIdle -gt 15 -and $selectClicked) {
+                # Some tenants skip Replace if first publish; treat as uploading.
+                Write-Log 'No Replace dialog yet; assuming upload in progress.' 'WARN'
+                $stage = 'uploading'
+                $uploadIdle = 0
+            }
+        }
+
+        if ($stage -eq 'uploading' -and -not $gotItClicked) {
+            foreach ($btn in @('Got it', 'Close')) {
+                $el = Find-UiaByName -Root $ui -Name $btn -Exact $true
+                if ($el -and (Invoke-UiaElement -Element $el -Label $btn)) {
+                    $gotItClicked = $true
+                    Write-Log 'Publish success dialog dismissed.'
+                    return $true
+                }
+            }
+            $success = Find-UiaByName -Root $ui -Name 'Successfully published' -Exact $false
+            if ($success) {
+                $uploadIdle++
+                # Visible success text but button not found yet.
+            } else {
+                $uploadIdle++
+            }
+            if ($uploadIdle -gt 0 -and ($uploadIdle % 30) -eq 0) {
+                Write-Log ("Still waiting for success dialog after Replace (poll={0})..." -f $uploadIdle)
+            }
+        }
+
+        Start-Sleep -Seconds 2
     }
-    Write-Log ("Publish timed out after {0}s (dialog clicks={1}). Check Desktop for workspace/sign-in prompts." -f $TimeoutSec, $clicks) 'ERROR'
+
+    Write-Log ("Publish timed out after {0}s (workspace={1} select={2} replace={3} gotIt={4})." -f `
+        $TimeoutSec, $workspaceSelected, $selectClicked, $replaceClicked, $gotItClicked) 'ERROR'
     return $false
 }
 
@@ -525,6 +625,22 @@ if ($item.Length -lt 1MB) {
 
 $beforeWrite = $item.LastWriteTimeUtc
 $proc = Get-OpenPbixProcess $PbixPath
+
+if ($PublishOnly) {
+    Write-Log 'PublishOnly: skipping refresh/save.'
+    if (-not $proc) {
+        throw 'PublishOnly requires HorseShows.pbix already open in Power BI Desktop.'
+    }
+    Wait-MainWindow -Process $proc -TimeoutSec ([Math]::Min(90, $LoadTimeoutSec))
+    $published = Publish-Pbix -Process $proc -TimeoutSec $PublishTimeoutSec -WorkspaceName $WorkspaceName
+    if (-not $published) {
+        Write-Log 'PublishOnly failed or timed out.' 'ERROR'
+        Write-Log '==== simple refresh FAILED (publish) ====' 'ERROR'
+        exit 3
+    }
+    Write-Log '==== PublishOnly done (Desktop left open) ===='
+    exit 0
+}
 
 if (-not $proc) {
     $exe = Get-PbiExe
@@ -609,7 +725,7 @@ if ($SkipPublish) {
         Write-Log '==== simple refresh FAILED (no publish) ====' 'ERROR'
         exit 1
     }
-    $published = Publish-Pbix -Process $proc -TimeoutSec $PublishTimeoutSec
+    $published = Publish-Pbix -Process $proc -TimeoutSec $PublishTimeoutSec -WorkspaceName $WorkspaceName
     if (-not $published) {
         Write-Log 'Refresh/save OK but Publish failed or timed out.' 'ERROR'
         Write-Log '==== simple refresh FAILED (publish) ====' 'ERROR'

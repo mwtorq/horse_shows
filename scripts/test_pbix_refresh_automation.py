@@ -84,6 +84,9 @@ def main() -> None:
         "PBIDesktop",
         "Publish-Pbix",
         "SkipPublish",
+        "PublishOnly",
+        "WorkspaceName",
+        "My workspace",
     ):
         if needle not in simple:
             fail(f"simple refresh missing {needle!r}")
