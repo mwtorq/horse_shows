@@ -18,9 +18,9 @@ Refresh the local import-mode Power BI file `PowerBI/HorseShows.pbix` from `Hors
 - Scrape HorseShowsOnline or Saddle Horse Report
 - Commit or push `HorseShows.pbix` (Git LFS, ~442 MB, changes every refresh)
 - Open a pull request
-- Publish to Power BI Service unless the user explicitly asks
 - Kill Power BI Desktop windows the user already had open
 - Refresh from this Linux/cloud environment
+- Skip Service publish only when the user asks for `-SkipPublish` (default is Desktop Publish after save)
 
 ## Preconditions (Windows, interactive session)
 
@@ -47,6 +47,7 @@ Useful switches:
 | `-KeepOpen` | (default) Leave Power BI Desktop running |
 | `-CloseWhenDone` | Close Power BI Desktop if this run launched it |
 | `-SkipSave` | Refresh the in-memory model only (do not Ctrl+S the pbix) |
+| `-SkipPublish` | Refresh/save only; do not Desktop-Publish to Power BI Service |
 | `-TimeoutMinutes 60` | Allow a longer VertiPaq refresh |
 
 The script:
@@ -55,7 +56,9 @@ The script:
 2. Opens it in Power BI Desktop with a fully quoted path (OneDrive spaces break `Start-Process -ArgumentList`)
 3. Finds the local Analysis Services port (`msmdsrv.port.txt` / `msmdsrv.exe`)
 4. Issues a full TMSL refresh against the in-memory model
-5. Sends Ctrl+S so the pbix on disk is updated; leaves Desktop open unless `-CloseWhenDone`
+5. Sends Ctrl+S so the pbix on disk is updated
+6. Publishes via Desktop Home > Publish (Replace if prompted); use `-SkipPublish` to skip
+7. Leaves Desktop open unless `-CloseWhenDone`
 
 Shared logs live under `RESULTS_AUTOMATION_HOME` (default `C:\Users\mw\ResultsAutomation`) when `Common.ps1` is present. Otherwise the script writes to `%TEMP%\HorseShowsPbixRefresh`.
 

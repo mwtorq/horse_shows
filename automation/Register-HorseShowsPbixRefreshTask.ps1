@@ -72,7 +72,7 @@ $trigger = New-ScheduledTaskTrigger -Once -At $At -RepetitionInterval (New-TimeS
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 2) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
 
-Register-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description 'Every 8 hours: open HorseShows.pbix, ribbon Refresh, Save. Leaves Desktop open.' -Force | Out-Null
+Register-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description 'Every 8 hours: open HorseShows.pbix, Refresh, Save, Publish. Leaves Desktop open.' -Force | Out-Null
 
 Write-Host "Installed $refreshPath"
 Write-Host "Run now:  $runCmdPath"

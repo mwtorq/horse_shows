@@ -61,7 +61,7 @@ Register-ScheduledTask `
     -Trigger $trigger `
     -Settings $settings `
     -Principal $principal `
-    -Description 'Every 8 hours: open HorseShows.pbix, Refresh, Save. Leaves Power BI open.' `
+    -Description 'Every 8 hours: open HorseShows.pbix, Refresh, Save, Publish. Leaves Power BI open.' `
     -Force | Out-Null
 
 Write-Host "Installed: $refreshPath"
@@ -69,6 +69,6 @@ Write-Host "Manual:    $(Join-Path $dir 'Run.cmd')"
 Write-Host "Also:      $(Join-Path $repo 'automation\Run-PbixRefresh.cmd')"
 Write-Host "Task:      $taskPath$taskName every 8 hours"
 Write-Host ''
-Write-Host 'Running refresh NOW in this window (needs your desktop for SendKeys)...'
+Write-Host 'Running refresh + publish NOW in this window (needs your desktop for SendKeys)...'
 & $src
 Write-Host "Done. Log: $(Join-Path $dir 'refresh.log')"

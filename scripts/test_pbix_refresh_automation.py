@@ -82,6 +82,8 @@ def main() -> None:
         "cmd.exe",
         "LastWriteTimeUtc",
         "PBIDesktop",
+        "Publish-Pbix",
+        "SkipPublish",
     ):
         if needle not in simple:
             fail(f"simple refresh missing {needle!r}")
