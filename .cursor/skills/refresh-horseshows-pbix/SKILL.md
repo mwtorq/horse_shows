@@ -48,6 +48,8 @@ Useful switches:
 | `-CloseWhenDone` | Close Power BI Desktop if this run launched it |
 | `-SkipSave` | Refresh the in-memory model only (do not Ctrl+S the pbix) |
 | `-SkipPublish` | Refresh/save only; do not Desktop-Publish to Power BI Service |
+| `-PublishOnly` | Desktop Publish only (pbix already open; skip refresh/save) |
+| `-WorkspaceName` | Target workspace for Publish (default `My workspace`) |
 | `-TimeoutMinutes 60` | Allow a longer VertiPaq refresh |
 
 The script:
